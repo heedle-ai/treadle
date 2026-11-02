@@ -49,13 +49,16 @@ type Skill struct {
 	Description string  `json:"description"`
 	Version     warp.ID `json:"version"` // the folder's tree ID
 	Commit      warp.ID `json:"commit"`  // where this version was added
+	// Source is where this version was imported from, or nil if it was
+	// added from a folder.
+	Source *Source `json:"source,omitempty"`
 }
 
 var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // Meta reads a SKILL.md's front matter: the YAML between its first two
 // "---" lines. name must be lower-case letters, digits and single hyphens,
-// at most 64 characters, and not contain "anthropic" or "claude";
+// at most 64 characters;
 // description must be non-empty, at most 1024 characters, without "<" or
 // ">". These are the rules of Anthropic's Agent Skills. Both must be YAML
 // strings, the front matter ends at a line that is exactly "---", and
@@ -112,8 +115,6 @@ func Meta(skillMD []byte) (name, description string, err error) {
 	switch {
 	case len(m.Name) > 64 || !skillName.MatchString(m.Name):
 		return bad("name %q must be lower-case letters, digits and single hyphens, at most 64 characters", m.Name)
-	case strings.Contains(m.Name, "anthropic") || strings.Contains(m.Name, "claude"):
-		return bad("name %q may not contain \"anthropic\" or \"claude\"", m.Name)
 	case draft.Reserved(m.Name):
 		return bad("name %q is reserved by the language (a program could never call it)", m.Name)
 	case strings.TrimSpace(m.Description) == "" || utf8.RuneCountInString(m.Description) > 1024 || strings.ContainsAny(m.Description, "<>") ||
@@ -142,6 +143,10 @@ type Library struct {
 // changes nothing and returns it. at is the commit's time: pass a fixed
 // time, not now, for the same commit from the same files.
 func (l *Library) Add(ctx context.Context, files map[string][]byte, at time.Time) (Skill, error) {
+	return l.add(ctx, files, at, nil)
+}
+
+func (l *Library) add(ctx context.Context, files map[string][]byte, at time.Time, src *Source) (Skill, error) {
 	name, desc, err := Check(files)
 	if err != nil {
 		return Skill{}, err
@@ -165,12 +170,16 @@ func (l *Library) Add(ctx context.Context, files map[string][]byte, at time.Time
 				return Skill{}, err
 			}
 			if t == tree {
-				return Skill{Name: name, Description: desc, Version: tree, Commit: head}, nil
+				ts, err := l.Store.Trailers(ctx, head)
+				if err != nil {
+					return Skill{}, err
+				}
+				return Skill{Name: name, Description: desc, Version: tree, Commit: head, Source: sourceOf(ts)}, nil
 			}
 			parents = []warp.ID{head}
 		}
 		commit, err := l.Store.Commit(ctx, warp.CommitSpec{Tree: tree, Parents: parents, Message: "skill " + name,
-			Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
+			Trailers: sourceTrailers(src), Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
 		if err != nil {
 			return Skill{}, err
 		}
@@ -181,7 +190,7 @@ func (l *Library) Add(ctx context.Context, files map[string][]byte, at time.Time
 		if err != nil {
 			return Skill{}, err
 		}
-		return Skill{Name: name, Description: desc, Version: tree, Commit: commit}, nil
+		return Skill{Name: name, Description: desc, Version: tree, Commit: commit, Source: src}, nil
 	}
 }
 
@@ -210,6 +219,11 @@ func (l *Library) Skills(ctx context.Context) (skills []Skill, bad []error, err 
 			continue
 		}
 		s.Commit = r.Commit
+		ts, err := l.Store.Trailers(ctx, r.Commit)
+		if err != nil {
+			return nil, nil, err
+		}
+		s.Source = sourceOf(ts)
 		skills = append(skills, s)
 	}
 	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
@@ -275,7 +289,7 @@ func (l *Library) Versions(ctx context.Context, name string) ([]Skill, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.Commit = c.ID
+		s.Commit, s.Source = c.ID, sourceOf(c.Trailers)
 		out = append(out, s)
 	}
 	return out, nil

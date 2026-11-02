@@ -59,6 +59,8 @@ why the existing tool can't do it.
   a run against those pins (`Library.Pinned`) and records their trees under
   `uses/` (`Library.Uses`); never check or run a plan against the newest.
 - A skill step is one of pirn's agent steps (`pirn.Step`) with the folder in
-  `/work/skill`. treadle runs nothing itself.
+  `/work/skill`. The only process treadle runs is `git`, to fetch imports
+  (shallow, sparse, no prompts or hooks, the URL after `--`).
+- `TestLive_*` reaches github.com when `TREADLE_LIVE=1`; it isn't a guard.
 - `go.mod` replaces the heedle-ai modules with `../` checkouts until they
   are published; clone all repos as siblings.

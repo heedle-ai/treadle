@@ -60,8 +60,7 @@ func TestInv_SkillsAreChecked(t *testing.T) {
 	for _, bad := range []string{
 		"name: w\ndescription: d\n", "---\nname: w\ndescription: d\n", "---\nname: [w\n---\n",
 		"---\nname: Weather\ndescription: d\n---\n", "---\nname: wea--ther\ndescription: d\n---\n", "---\nname: -w\ndescription: d\n---\n",
-		"---\nname: " + strings.Repeat("w", 65) + "\ndescription: d\n---\n", "---\nname: claude-helper\ndescription: d\n---\n",
-		"---\nname: my-anthropic\ndescription: d\n---\n", "---\nname: w\n---\n", "---\nname: w\ndescription: \"  \"\n---\n",
+		"---\nname: " + strings.Repeat("w", 65) + "\ndescription: d\n---\n", "---\nname: w\n---\n", "---\nname: w\ndescription: \"  \"\n---\n",
 		"---\nname: w\ndescription: " + strings.Repeat("d", 1025) + "\n---\n", "---\nname: w\ndescription: use <b>\n---\n",
 		"---\nname: w\ndescription: d\n---\n\xff",
 		// Review 13: a line starting --- closed the front matter; numbers
