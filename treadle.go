@@ -235,7 +235,7 @@ func (l *Library) Skills(ctx context.Context) (skills []Skill, bad []error, err 
 // folder, checked. Any other tree in the store, even one holding a
 // SKILL.md of that name, is refused.
 func (l *Library) version(ctx context.Context, name string, version warp.ID) (map[string][]byte, error) {
-	if !skillName.MatchString(name) {
+	if !validName(name) {
 		return nil, fmt.Errorf("%w: skill name %q", ErrInvalid, name)
 	}
 	head, ok, err := l.Store.Resolve(ctx, RefPrefix+name)
@@ -266,9 +266,15 @@ func (l *Library) version(ctx context.Context, name string, version warp.ID) (ma
 	return files, nil
 }
 
-// Versions lists every version of a skill, newest first.
+// validName reports whether name can be a skill's name.
+func validName(name string) bool { return len(name) <= 64 && skillName.MatchString(name) }
+
+// Versions lists every version of a skill, newest first. A version that
+// isn't a valid skill of that name can't be pinned or run, so it's left
+// out, rather than hiding the others. It costs a few git processes, and
+// two per version (warp's Files), however large each version is.
 func (l *Library) Versions(ctx context.Context, name string) ([]Skill, error) {
-	if !skillName.MatchString(name) {
+	if !validName(name) {
 		return nil, fmt.Errorf("%w: skill name %q", ErrInvalid, name)
 	}
 	head, ok, err := l.Store.Resolve(ctx, RefPrefix+name)
@@ -279,20 +285,99 @@ func (l *Library) Versions(ctx context.Context, name string) ([]Skill, error) {
 	if err != nil {
 		return nil, err
 	}
+	mds := make([]warp.ID, len(log))
+	var small []warp.ID // SKILL.md blobs small enough to read
+	for i, c := range log {
+		files, err := l.Store.Files(ctx, c.Tree)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			if f.Path == SkillFile && f.Size <= MaxSkillMD {
+				mds[i] = f.ID
+				small = append(small, f.ID)
+			}
+		}
+	}
+	data, err := l.Store.Blobs(ctx, small)
+	if err != nil {
+		return nil, err
+	}
+	text := map[warp.ID][]byte{}
+	for i, id := range small {
+		text[id] = data[i]
+	}
 	var out []Skill
-	for _, c := range log {
-		tree, _, err := l.Store.Parents(ctx, c.ID)
-		if err != nil {
-			return nil, err
+	for i, c := range log {
+		b, ok := text[mds[i]]
+		if !ok {
+			continue
 		}
-		s, err := l.describe(ctx, tree)
-		if err != nil {
-			return nil, err
+		n, desc, err := Meta(b)
+		if err != nil || n != name {
+			continue
 		}
-		s.Commit, s.Source = c.ID, sourceOf(c.Trailers)
-		out = append(out, s)
+		out = append(out, Skill{Name: n, Description: desc, Version: c.Tree, Commit: c.ID, Source: sourceOf(c.Trailers)})
 	}
 	return out, nil
+}
+
+// Folder is one version of a skill as a page shows it: the newest commit
+// that added it, its files with their sizes, and its SKILL.md. Only a
+// version added to that skill, valid and within pirn's limits, is
+// returned; nothing but the SKILL.md is read.
+func (l *Library) Folder(ctx context.Context, name string, version warp.ID) (Skill, []warp.File, []byte, error) {
+	if !validName(name) {
+		return Skill{}, nil, nil, fmt.Errorf("%w: skill name %q", ErrInvalid, name)
+	}
+	head, ok, err := l.Store.Resolve(ctx, RefPrefix+name)
+	if err != nil {
+		return Skill{}, nil, nil, err
+	}
+	if !ok {
+		return Skill{}, nil, nil, fmt.Errorf("%w: no skill %q", warp.ErrNotFound, name)
+	}
+	log, err := l.Store.Log(ctx, head, 0)
+	if err != nil {
+		return Skill{}, nil, nil, err
+	}
+	var commit *warp.CommitInfo
+	for i := range log {
+		if log[i].Tree == version {
+			commit = &log[i] // newest first: the newest commit with this tree
+			break
+		}
+	}
+	if commit == nil {
+		return Skill{}, nil, nil, fmt.Errorf("%w: %s isn't a version of the skill %q", warp.ErrNotFound, version, name)
+	}
+	files, err := l.Store.Files(ctx, version)
+	if err != nil {
+		return Skill{}, nil, nil, err
+	}
+	var total int64
+	var md warp.File
+	for _, f := range files {
+		total += f.Size
+		if f.Path == SkillFile {
+			md = f
+		}
+	}
+	if len(files) > pirn.MaxSkillFiles || total > pirn.MaxSkillBytes || md.ID == "" || md.Size > MaxSkillMD {
+		return Skill{}, nil, nil, fmt.Errorf("%w: version %s of %q isn't a skill within pirn's limits", ErrInvalid, version, name)
+	}
+	text, err := l.Store.Blob(ctx, md.ID)
+	if err != nil {
+		return Skill{}, nil, nil, err
+	}
+	n, desc, err := Meta(text)
+	if err != nil {
+		return Skill{}, nil, nil, err
+	}
+	if n != name {
+		return Skill{}, nil, nil, fmt.Errorf("%w: version %s is the skill %q, not %q", warp.ErrNotFound, version, n, name)
+	}
+	return Skill{Name: n, Description: desc, Version: version, Commit: commit.ID, Source: sourceOf(commit.Trailers)}, files, text, nil
 }
 
 // Files returns a version's folder, checked as Add checks it.

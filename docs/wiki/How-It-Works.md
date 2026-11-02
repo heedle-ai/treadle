@@ -1,6 +1,6 @@
 ## A skill, and its versions
 
-A skill is a folder: `SKILL.md`, whose YAML front matter has the skill's `name` and `description` ([Anthropic's Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/overview) rules: `treadle.Meta`), then whatever scripts and references it needs. `treadle.Check` also applies pirn's rules for what may go in a step's container: at most 200 files and 16 MiB, with safe relative paths only.
+A skill is a folder: `SKILL.md`, whose YAML front matter has the skill's `name` and `description` ([Anthropic's Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/overview) format rules: `treadle.Meta`; the API's ban on "anthropic" and "claude" in names isn't applied, since treadle never uploads skills to Anthropic), then whatever scripts and references it needs. `treadle.Check` also applies pirn's rules for what may go in a step's container: at most 200 files and 16 MiB, with safe relative paths only.
 
 `Library.Add` keeps a folder in a warp store as a commit on `refs/treadle/skills/<name>`, whose tree is the folder byte for byte. A **version** is that tree's ID: equal folders are equal versions, and adding a folder a skill already has changes nothing. Each new version's commit has the previous one as its parent, so `git log refs/treadle/skills/weather` is the skill's history and every version stays readable. Writers adding at the same time retry on a conflict, so they all agree. Besides Anthropic's rules, a name can't be one draft reserves (`block`, `script`, `pipe`, `par`, `when`, `guard`), `name` and `description` must be YAML strings, the front matter ends at a line that is exactly `---`, and a description can't hold control characters.
 
@@ -8,7 +8,8 @@ A skill is a folder: `SKILL.md`, whose YAML front matter has the skill's `name` 
 |---|---|
 | `Library.Add(files, at)` | Keeps a folder as its skill's newest version |
 | `Library.Skills()` | The newest version of every skill; a ref whose newest version isn't a valid skill of its name is left out and reported, never fatal |
-| `Library.Versions(name)` | Every version of one skill, newest first |
+| `Library.Versions(name)` | Every version of one skill, newest first; a version that isn't a valid skill of that name is left out |
+| `Library.Folder(name, version)` | One version's files, with sizes, and its `SKILL.md`, only for a version added to that skill, within the limits |
 | `Library.Files(version)` | A version's folder, checked again |
 
 ## Importing skills
@@ -24,7 +25,7 @@ A skill can come from four places, and each goes through the same checks before 
 
 `loom skills -catalog LINK` lists what a repository offers: every folder up to three levels down with a `SKILL.md`, with its name and description, or why it can't be imported as it is (`Catalog`).
 
-Fetching is the `git` CLI's: a shallow, sparse clone of just the skill's folder (only `SKILL.md` files, for a catalog) into a temporary directory, removed afterwards. git never prompts for credentials (your own setup, such as `gh auth setup-git`, still applies to private repositories), runs no hooks from the repository, and is given the URL after `--`, so a URL can't pass as an option. A source must be an `https://` or `file://` URL, a plain branch or tag name, and a path of safe segments; hidden files and folders in the skill's folder are left out, and a symbolic link refuses it.
+Fetching is the `git` CLI's: a shallow, sparse clone of just the skill's folder (only files named `SKILL.md`, for a catalog) into a temporary directory, removed afterwards. The files are then read from Git's own objects (`ls-tree`, then `cat-file`), not from the checked-out folder, so they are the commit's exact bytes whatever the repository's `.gitattributes` or your settings say, and their number and sizes are checked before any is read. git never prompts for credentials (your own setup, such as `gh auth setup-git`, still applies to private repositories), runs no hooks from the repository, and is given the URL after `--`, so a URL can't pass as an option. It runs in its own process group, killed with its helpers if the fetch is cancelled, and a fetch with no deadline of its own stops after 5 minutes (`FetchTimeout`). A source must be an `https://` or `file://` URL without credentials, a plain branch or tag name, and a path of segments made of letters, digits, `.`, `_` and `-`; hidden files and folders in the skill's folder are left out, and a symbolic link or submodule refuses it. The download itself is git's: a huge file in the chosen folder is downloaded before the size check refuses it, within the timeout.
 
 An imported version's commit names where it came from, in trailers: `Skill-Source` (the repository), `Skill-Source-Ref`, `Skill-Source-Path`, and `Skill-Source-Commit`, the exact commit read. `Skills` and `Versions` read them back (`Skill.Source`), so a skill's history says where every version came from:
 
