@@ -11,7 +11,7 @@ cd treadle && go test ./...
 
 ## 2. Write a skill
 
-A skill is a folder with a `SKILL.md`. Its front matter names and describes it: `name` is lower-case letters, digits and single hyphens (at most 64 characters, without "anthropic" or "claude"), and `description` is 1 to 1024 characters, without `<` or `>`. The rest is what Claude should do.
+A skill is a folder with a `SKILL.md`. Its front matter names and describes it: `name` is lower-case letters, digits and single hyphens (at most 64 characters), and `description` is 1 to 1024 characters, without `<` or `>`. The rest is what Claude should do.
 
 ```bash
 cd ~/src/heedle-ai
@@ -51,3 +51,16 @@ The compiled plan's node runs the activity `Skill`, with the skill's name and th
 ```
 
 To run it, start a worker on that store with an Anthropic API key and an agent image, as for any agent step ([pirn → Agent steps](https://github.com/heedle-ai/pirn/wiki/Getting-Started)), `loom worker -store ~/skills-demo.git -agent-image <image ID>`, and submit with the same store: `loom run -store ~/skills-demo.git '(weather "Boston")'`. A worker registers the store's skills when it starts; restart it to pick up new ones. drawdown does the same with its `-store`.
+
+## 4. Import skills
+
+List what a repository offers, then import one by its GitHub link. Both run git, so you need the network:
+
+```bash
+cd ~/src/heedle-ai/loom
+go run ./cmd/loom skills -catalog https://github.com/anthropics/skills
+go run ./cmd/loom skills -store ~/skills-demo.git -import https://github.com/anthropics/skills/tree/main/skills/pdf
+git --git-dir ~/skills-demo.git log -1 --format=%B refs/treadle/skills/pdf
+```
+
+The catalog lists each folder with its skill's name and description. The import prints the version (`added pdf at 8b61e7d0b4ba…` when this was written; it changes as the repository does), and the log shows where it came from, down to the commit. To keep a `SKILL.md` you have as text, paste it: `go run ./cmd/loom skills -store ~/skills-demo.git -add - < SKILL.md`.

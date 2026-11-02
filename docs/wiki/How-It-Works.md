@@ -1,6 +1,6 @@
 ## A skill, and its versions
 
-A skill is a folder: `SKILL.md`, whose YAML front matter has the skill's `name` and `description` ([Anthropic's Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/overview) rules: `treadle.Meta`), then whatever scripts and references it needs. `treadle.Check` also applies pirn's rules for what may go in a step's container: at most 200 files and 4 MiB, with safe relative paths only.
+A skill is a folder: `SKILL.md`, whose YAML front matter has the skill's `name` and `description` ([Anthropic's Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills/overview) rules: `treadle.Meta`), then whatever scripts and references it needs. `treadle.Check` also applies pirn's rules for what may go in a step's container: at most 200 files and 16 MiB, with safe relative paths only.
 
 `Library.Add` keeps a folder in a warp store as a commit on `refs/treadle/skills/<name>`, whose tree is the folder byte for byte. A **version** is that tree's ID: equal folders are equal versions, and adding a folder a skill already has changes nothing. Each new version's commit has the previous one as its parent, so `git log refs/treadle/skills/weather` is the skill's history and every version stays readable. Writers adding at the same time retry on a conflict, so they all agree. Besides Anthropic's rules, a name can't be one draft reserves (`block`, `script`, `pipe`, `par`, `when`, `guard`), `name` and `description` must be YAML strings, the front matter ends at a line that is exactly `---`, and a description can't hold control characters.
 
@@ -10,6 +10,34 @@ A skill is a folder: `SKILL.md`, whose YAML front matter has the skill's `name` 
 | `Library.Skills()` | The newest version of every skill; a ref whose newest version isn't a valid skill of its name is left out and reported, never fatal |
 | `Library.Versions(name)` | Every version of one skill, newest first |
 | `Library.Files(version)` | A version's folder, checked again |
+
+## Importing skills
+
+A skill can come from four places, and each goes through the same checks before it is kept:
+
+| From | How | Call |
+|---|---|---|
+| A folder on disk | `loom skills -add FOLDER` | `ReadFolder`, then `Library.Add` |
+| A pasted `SKILL.md` | `loom skills -add -` (reads standard input) | `Library.Add` with one file |
+| A GitHub link to a folder | `loom skills -import https://github.com/OWNER/REPO/tree/REF/PATH` | `ParseGitHub`, then `Library.Import` |
+| Any Git repository | `loom skills -import URL -path PATH [-branch REF]` (an `https://` or `file://` URL) | `Library.Import` |
+
+`loom skills -catalog LINK` lists what a repository offers: every folder up to three levels down with a `SKILL.md`, with its name and description, or why it can't be imported as it is (`Catalog`).
+
+Fetching is the `git` CLI's: a shallow, sparse clone of just the skill's folder (only `SKILL.md` files, for a catalog) into a temporary directory, removed afterwards. git never prompts for credentials (your own setup, such as `gh auth setup-git`, still applies to private repositories), runs no hooks from the repository, and is given the URL after `--`, so a URL can't pass as an option. A source must be an `https://` or `file://` URL, a plain branch or tag name, and a path of safe segments; hidden files and folders in the skill's folder are left out, and a symbolic link refuses it.
+
+An imported version's commit names where it came from, in trailers: `Skill-Source` (the repository), `Skill-Source-Ref`, `Skill-Source-Path`, and `Skill-Source-Commit`, the exact commit read. `Skills` and `Versions` read them back (`Skill.Source`), so a skill's history says where every version came from:
+
+```text
+skill pdf
+
+Skill-Source: https://github.com/anthropics/skills
+Skill-Source-Ref: main
+Skill-Source-Path: skills/pdf
+Skill-Source-Commit: ca45fc496a3436251f191354091d557da31c15b5
+```
+
+[Anthropic's skills repository](https://github.com/anthropics/skills) imports as it is, all but two folders, which its catalog lists with the reason: `claude-api`, whose description is longer than the 1024 characters Agent Skills allow, and `template`, whose folder isn't named like its skill.
 
 ## A skill is a command, pinned by its plan
 
