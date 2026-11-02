@@ -103,8 +103,13 @@ func TestInv_ImportsAreChecked(t *testing.T) {
 	if list, _, _ := l.Pending(ctx); len(list) != 0 {
 		t.Errorf("kept pending %+v", list)
 	}
-	if _, err := l.Import(ctx, treadle.Source{Repo: repo, Ref: "nope", Path: "ok"}, time.Now()); err == nil {
-		t.Error("imported from a ref that doesn't exist")
+	// Review 18: a missing repository or ref was a failure to retry, not
+	// a refusal.
+	if _, err := l.Import(ctx, treadle.Source{Repo: repo, Ref: "nope", Path: "ok"}, time.Now()); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a ref that doesn't exist: %v", err)
+	}
+	if _, err := l.Import(ctx, treadle.Source{Repo: "file:///nonexistent/repo"}, time.Now()); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a repository that doesn't exist: %v", err)
 	}
 }
 
@@ -126,6 +131,16 @@ func TestInv_GitHubLinks(t *testing.T) {
 		"https://github.com/a/b/tree/main/../x", "https://github.com/a/b/tree/main/.git", "https://github.com/a/b?x=1"} {
 		if _, err := treadle.ParseGitHub(bad); !errors.Is(err, treadle.ErrInvalid) {
 			t.Errorf("accepted %s", bad)
+		}
+	}
+	// SourceFor: a repository's link takes a folder and branch; a
+	// folder's link carries its own; any other URL is checked as a source.
+	if s, err := treadle.SourceFor("github.com/a/b", "skills/pdf", "v1"); err != nil || s != (treadle.Source{Repo: "https://github.com/a/b", Ref: "v1", Path: "skills/pdf"}) {
+		t.Errorf("SourceFor(repo, path, branch) = %+v, %v", s, err)
+	}
+	for _, bad := range [][3]string{{"https://github.com/a/b/tree/main/x", "", "v1"}, {"https://github.com/a/b/tree/main/x", "y", ""}, {"ssh://x/y", "", ""}, {"file:///tmp/r", "../x", ""}} {
+		if _, err := treadle.SourceFor(bad[0], bad[1], bad[2]); !errors.Is(err, treadle.ErrInvalid) {
+			t.Errorf("SourceFor%q: %v", bad, err)
 		}
 	}
 }

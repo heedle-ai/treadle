@@ -65,6 +65,31 @@ var safePath = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-
 
 func skillPath(p string) bool { return len(p) <= 255 && safePath.MatchString(p) }
 
+// SourceFor is the source a person names: a GitHub link (to a repository
+// or one of its folders, with or without https://), or any repository URL with the skill's folder
+// and branch given apart. A GitHub link to a folder carries its own
+// branch and folder, so path and branch must then be empty.
+func SourceFor(link, path, branch string) (Source, error) {
+	if strings.HasPrefix(link, "github.com/") {
+		link = "https://" + link // as people copy it from the address bar
+	}
+	if !strings.HasPrefix(link, "https://github.com/") {
+		s := Source{Repo: link, Ref: branch, Path: path}
+		return s, s.check()
+	}
+	s, err := ParseGitHub(link)
+	if err != nil {
+		return s, err
+	}
+	if path != "" || branch != "" {
+		if s.Ref != "" || s.Path != "" {
+			return s, fmt.Errorf("%w: a GitHub link to a folder carries its own branch and folder: give the folder and branch with the repository's link instead", ErrInvalid)
+		}
+		s.Ref, s.Path = branch, path
+	}
+	return s, s.check()
+}
+
 // ParseGitHub reads a GitHub link to a skill's folder,
 // https://github.com/OWNER/REPO/tree/REF/PATH, or to a repository whose
 // root is a skill. REF is one path segment: a branch or tag with a "/" in
@@ -298,12 +323,22 @@ func (l *Library) Import(ctx context.Context, s Source, at time.Time) (Skill, er
 
 // sparseClone clones s's ref into dir/src, shallow, fetching only the
 // files the sparse-checkout patterns select.
+// missing is what git says when a repository or ref doesn't exist, or
+// (GitHub's answer for both a missing and a private repository) asks for
+// credentials it may not prompt for.
+var missing = regexp.MustCompile(`(?i)repository .*not found|does not exist|not appear to be a git repository|could not find remote branch|remote branch .* not found|could not read username`)
+
 func sparseClone(ctx context.Context, dir string, s Source, patterns ...string) error {
 	args := []string{"clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse", "--no-checkout"}
 	if s.Ref != "" {
 		args = append(args, "--branch", s.Ref)
 	}
 	if _, err := git(ctx, dir, append(args, "--", s.Repo, "src")...); err != nil {
+		// A repository or ref that isn't there won't appear on a retry:
+		// say so as a refusal, not a failure to retry (review 18).
+		if missing.MatchString(err.Error()) {
+			return fmt.Errorf("%w: %v", ErrInvalid, err)
+		}
 		return err
 	}
 	if _, err := git(ctx, dir+"/src", append([]string{"sparse-checkout", "set", "--no-cone", "--"}, patterns...)...); err != nil {
