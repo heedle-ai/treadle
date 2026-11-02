@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]   # Linux amd64, Linux arm64, macOS Apple Silicon
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: treadle
+      - uses: actions/checkout@v4      # go.mod replaces the heedle-ai modules with ../
+        with:
+          repository: heedle-ai/weft
+          path: weft
+      - uses: actions/checkout@v4
+        with:
+          repository: heedle-ai/shuttle
+          path: shuttle
+      - uses: actions/checkout@v4
+        with:
+          repository: heedle-ai/draft
+          path: draft
+      - uses: actions/checkout@v4
+        with:
+          repository: heedle-ai/warp
+          path: warp
+      - uses: actions/checkout@v4      # the tests run skills through loom
+        with:
+          repository: heedle-ai/loom
+          path: loom
+      - name: private-bobbin
+        # read-only deploy key on heedle-ai/bobbin
+        uses: actions/checkout@v4
+        with:
+          repository: heedle-ai/bobbin
+          path: bobbin
+          ssh-key: ${{ secrets.BOBBIN_DEPLOY_KEY }}
+      - name: private-reed
+        # read-only deploy key on heedle-ai/reed
+        uses: actions/checkout@v4
+        with:
+          repository: heedle-ai/reed
+          path: reed
+          ssh-key: ${{ secrets.REED_DEPLOY_KEY }}
+      - name: private-pirn
+        # read-only deploy key on heedle-ai/pirn
+        uses: actions/checkout@v4
+        with:
+          repository: heedle-ai/pirn
+          path: pirn
+          ssh-key: ${{ secrets.PIRN_DEPLOY_KEY }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: treadle/go.mod
+          cache-dependency-path: treadle/go.sum
+      - name: gofmt
+        working-directory: treadle
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet
+        working-directory: treadle
+        run: go vet ./...
+      - name: test
+        working-directory: treadle
+        run: go test -race ./...
+      - name: invariants
+        working-directory: treadle
+        run: bash .github/invariants.sh

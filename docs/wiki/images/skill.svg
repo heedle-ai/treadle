@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="480" viewBox="0 0 680 480" role="img"><title>A skill step in treadle</title><desc>A program using the skill weather compiles, with the store's newest skills, to a plan node whose activity is Skill and whose arguments are the skill's name, the version it pins (v1), then the program's arguments. Then the check recompiles the program with the plan's own pins, so it passes even after v2 is added. Then the step runs as a pirn agent step, with the skill's folder at v1 in /work/skill side by side with the inputs in /work/in. Then the run's commit records the outputs side by side with uses/weather, the tree of v1.</desc><style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.w{stroke:#5F5E5A;stroke-width:1.5;fill:none}
+.d{stroke:#888780;stroke-width:0.8;fill:none;stroke-dasharray:5 4}
+.l{font-size:12px;fill:#5F5E5A}.f{font-size:13px;fill:#444441}
+.t1{font-size:14px;font-weight:600}.t2{font-size:12px}
+.p rect{fill:#EEEDFE;stroke:#534AB7}.p .t1{fill:#3C3489}.p .t2{fill:#534AB7}
+.g rect{fill:#E1F5EE;stroke:#0F6E56}.g .t1{fill:#085041}.g .t2{fill:#0F6E56}
+.c rect{fill:#FAECE7;stroke:#993C1D}.c .t1{fill:#712B13}.c .t2{fill:#993C1D}
+.n rect{fill:#F1EFE8;stroke:#5F5E5A}.n .t1{fill:#444441}.n .t2{fill:#5F5E5A}
+@media (prefers-color-scheme:dark){
+.w{stroke:#B4B2A9}.d{stroke:#888780}.l{fill:#B4B2A9}.f{fill:#D3D1C7}
+.p rect{fill:#3C3489;stroke:#AFA9EC}.p .t1{fill:#EEEDFE}.p .t2{fill:#CECBF6}
+.g rect{fill:#085041;stroke:#5DCAA5}.g .t1{fill:#E1F5EE}.g .t2{fill:#9FE1CB}
+.c rect{fill:#712B13;stroke:#F0997B}.c .t1{fill:#FAECE7}.c .t2{fill:#F5C4B3}
+.n rect{fill:#444441;stroke:#B4B2A9}.n .t1{fill:#F1EFE8}.n .t2{fill:#D3D1C7}}
+</style>
+<text class="f" x="40" y="34">(weather "Boston"), with the skill weather at version v1</text>
+<g class="p"><rect x="60" y="56" width="300" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="210.0" y="72" text-anchor="middle" dominant-baseline="central">compile</text><text class="t2" x="210.0" y="91" text-anchor="middle" dominant-baseline="central">draft, with the store's newest skills</text></g>
+<path class="w" d="M210 104 L210 132"/>
+<text class="l" x="222" y="123" text-anchor="start">;</text>
+<g class="n"><rect x="60" y="132" width="300" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="210.0" y="148" text-anchor="middle" dominant-baseline="central">plan node: activity Skill</text><text class="t2" x="210.0" y="167" text-anchor="middle" dominant-baseline="central">args: weather, v1, Boston</text></g>
+<path class="w" d="M210 180 L210 208"/>
+<text class="l" x="222" y="199" text-anchor="start">;</text>
+<g class="p"><rect x="60" y="208" width="300" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="210.0" y="224" text-anchor="middle" dominant-baseline="central">check</text><text class="t2" x="210.0" y="243" text-anchor="middle" dominant-baseline="central">recompile with the plan's pins: v1</text></g>
+<path class="w" d="M210 256 L210 284"/>
+<text class="l" x="222" y="275" text-anchor="start">;</text>
+<g class="c"><rect x="60" y="284" width="140" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="130.0" y="300" text-anchor="middle" dominant-baseline="central">/work/skill</text><text class="t2" x="130.0" y="319" text-anchor="middle" dominant-baseline="central">folder at v1</text></g>
+<text class="l" x="210" y="312" text-anchor="middle">⊗</text>
+<g class="c"><rect x="220" y="284" width="140" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="290.0" y="300" text-anchor="middle" dominant-baseline="central">/work/in</text><text class="t2" x="290.0" y="319" text-anchor="middle" dominant-baseline="central">the step's inputs</text></g>
+<text class="l" x="210" y="352" text-anchor="middle">a pirn agent step: Claude, in a fresh container</text>
+<path class="w" d="M210 360 L210 388"/>
+<text class="l" x="222" y="379" text-anchor="start">;</text>
+<g class="g"><rect x="60" y="388" width="140" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="130.0" y="404" text-anchor="middle" dominant-baseline="central">outputs/n0</text><text class="t2" x="130.0" y="423" text-anchor="middle" dominant-baseline="central">the result</text></g>
+<text class="l" x="210" y="416" text-anchor="middle">⊗</text>
+<g class="g"><rect x="220" y="388" width="140" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="290.0" y="404" text-anchor="middle" dominant-baseline="central">uses/weather</text><text class="t2" x="290.0" y="423" text-anchor="middle" dominant-baseline="central">tree v1</text></g>
+<text class="l" x="210" y="456" text-anchor="middle">the run's commit in Git</text>
+<g class="n"><rect x="430" y="132" width="210" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="535.0" y="148" text-anchor="middle" dominant-baseline="central">refs/treadle/skills/weather</text><text class="t2" x="535.0" y="167" text-anchor="middle" dominant-baseline="central">v1, then v2 added later</text></g>
+<path class="d" d="M430 156 L360 80"/>
+<text class="l" x="610" y="96" text-anchor="end">compile reads the newest</text>
+<path class="d" d="M620 180 L620 232 L360 232"/>
+<text class="l" x="608" y="224" text-anchor="end">check and run read the pinned v1</text>
+<path class="d" d="M620 232 L620 308 L360 308"/>
+</svg>
