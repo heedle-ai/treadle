@@ -48,7 +48,7 @@ var (
 // plain branch or tag name, and a relative path of safe segments.
 func (s Source) check() error {
 	switch {
-	case !repoURL.MatchString(s.Repo) || strings.Contains(s.Repo, ".."):
+	case !repoURL.MatchString(s.Repo) || !plainSegments(s.Repo):
 		return fmt.Errorf("%w: repository %q (want an https:// or file:// URL, without credentials)", ErrInvalid, redact(s.Repo))
 	case s.Ref != "" && (!refName.MatchString(s.Ref) || strings.Contains(s.Ref, "..") || strings.HasPrefix(s.Ref, "-")):
 		return fmt.Errorf("%w: ref %q", ErrInvalid, s.Ref)
@@ -114,7 +114,7 @@ func Fetch(ctx context.Context, s Source) (map[string][]byte, Source, error) {
 		return nil, s, err
 	}
 	s.Commit = strings.TrimSpace(commit)
-	treeish := "HEAD"
+	treeish := "HEAD^{tree}" // HEAD alone is a commit, never a tree
 	if s.Path != "" {
 		treeish = "HEAD:" + s.Path
 	}
@@ -194,8 +194,9 @@ type CatalogEntry struct {
 	Problem     string `json:"problem,omitempty"` // why it can't be imported as it is
 }
 
-// MaxSkillMD is the largest SKILL.md a catalog reads, or loom accepts
-// pasted.
+// MaxSkillMD is the largest SKILL.md a skill may have (Meta refuses a
+// bigger one), so a review, a catalog and the Skills page always show it
+// whole.
 const MaxSkillMD = 1 << 20
 
 // Catalog lists the skills a repository holds: every folder, up to three
@@ -273,15 +274,26 @@ func Catalog(ctx context.Context, repo, ref string) ([]CatalogEntry, error) {
 	return out, err
 }
 
-// Import fetches a skill from its source and keeps it as its newest
-// version, with the source on the version's commit (TrailerSource and the
-// rest), so its history says where every version came from.
+// Import fetches a skill from its source, with the source on its commit
+// (TrailerSource and the rest), so its history says where every version
+// came from. A source under a trusted prefix (Trusted) is kept as the
+// skill's newest version at once. Any other source waits for review: it
+// is kept on the skill's pending ref and returned with Pending set, and
+// becomes a version only once Approve names it. Importing the version a
+// skill already has changes nothing.
 func (l *Library) Import(ctx context.Context, s Source, at time.Time) (Skill, error) {
 	files, s, err := Fetch(ctx, s)
 	if err != nil {
 		return Skill{}, err
 	}
-	return l.add(ctx, files, at, &s)
+	trusted, err := l.Trusted(ctx)
+	if err != nil {
+		return Skill{}, err
+	}
+	if trustedBy(trusted, s.Repo) {
+		return l.add(ctx, files, at, &s, nil, nil)
+	}
+	return l.propose(ctx, files, at, &s)
 }
 
 // sparseClone clones s's ref into dir/src, shallow, fetching only the

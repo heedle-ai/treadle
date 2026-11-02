@@ -52,6 +52,9 @@ type Skill struct {
 	// Source is where this version was imported from, or nil if it was
 	// added from a folder.
 	Source *Source `json:"source,omitempty"`
+	// Pending is true for an import waiting for review: it isn't a
+	// version of the skill, and no command runs it, until it's approved.
+	Pending bool `json:"pending,omitempty"`
 }
 
 var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -62,15 +65,33 @@ var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // description must be non-empty, at most 1024 characters, without "<" or
 // ">". These are the rules of Anthropic's Agent Skills. Both must be YAML
 // strings, the front matter ends at a line that is exactly "---", and
-// treadle also refuses names draft reserves (draft.Reserved) and control
-// characters in descriptions.
+// treadle also refuses names draft reserves (draft.Reserved), files over
+// MaxSkillMD, and control characters other than tabs and line ends and
+// invisible format characters (but the zero-width joiner) anywhere in the
+// file.
 func Meta(skillMD []byte) (name, description string, err error) {
 	bad := func(format string, a ...any) (string, string, error) {
 		return "", "", fmt.Errorf("%w: %s: "+format, append([]any{ErrInvalid, SkillFile}, a...)...)
 	}
+	if len(skillMD) > MaxSkillMD {
+		// Bigger than a review shows or the Skills page serves
+		// (review 17: one over 1 MiB was approved unread).
+		return bad("is %d bytes; at most %d", len(skillMD), MaxSkillMD)
+	}
 	text := strings.ReplaceAll(string(skillMD), "\r\n", "\n")
 	if !utf8.ValidString(text) {
 		return bad("not UTF-8")
+	}
+	// No control characters: a NUL makes git call the file binary and
+	// hide it from a review's diff (review 16), and the others drive
+	// terminals. No invisible format characters either (bidirectional
+	// overrides, zero-width spaces), which make text read differently
+	// from what it says (review 17); only the zero-width joiner, which
+	// emoji need, is kept.
+	if strings.ContainsFunc(text, func(r rune) bool {
+		return unicode.IsControl(r) && r != '\n' && r != '\t' && r != '\r' || unicode.Is(unicode.Cf, r) && r != '\u200d'
+	}) {
+		return bad("holds a control or invisible format character")
 	}
 	lines := strings.Split(text, "\n")
 	if lines[0] != "---" {
@@ -143,10 +164,14 @@ type Library struct {
 // changes nothing and returns it. at is the commit's time: pass a fixed
 // time, not now, for the same commit from the same files.
 func (l *Library) Add(ctx context.Context, files map[string][]byte, at time.Time) (Skill, error) {
-	return l.add(ctx, files, at, nil)
+	return l.add(ctx, files, at, nil, nil, nil)
 }
 
-func (l *Library) add(ctx context.Context, files map[string][]byte, at time.Time, src *Source) (Skill, error) {
+// add keeps files as the newest version of their skill, with src's
+// trailers and then extra on its commit. If base isn't nil, the skill's
+// newest version must be the tree *base ("" for none) when the version
+// is added, or nothing is.
+func (l *Library) add(ctx context.Context, files map[string][]byte, at time.Time, src *Source, extra []warp.Trailer, base *warp.ID) (Skill, error) {
 	name, desc, err := Check(files)
 	if err != nil {
 		return Skill{}, err
@@ -176,10 +201,15 @@ func (l *Library) add(ctx context.Context, files map[string][]byte, at time.Time
 				}
 				return Skill{Name: name, Description: desc, Version: tree, Commit: head, Source: sourceOf(ts)}, nil
 			}
+			if base != nil && t != *base {
+				return Skill{}, fmt.Errorf("%w: %q's newest version changed to %s: review it again", ErrInvalid, name, t)
+			}
 			parents = []warp.ID{head}
+		} else if base != nil && *base != "" {
+			return Skill{}, fmt.Errorf("%w: %q has no versions any more: review it again", ErrInvalid, name)
 		}
 		commit, err := l.Store.Commit(ctx, warp.CommitSpec{Tree: tree, Parents: parents, Message: "skill " + name,
-			Trailers: sourceTrailers(src), Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
+			Trailers: append(sourceTrailers(src), extra...), Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
 		if err != nil {
 			return Skill{}, err
 		}
