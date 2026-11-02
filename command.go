@@ -115,7 +115,7 @@ func Command(a pirn.Agent, l *Library) weft.Arrow[plan.Input, string] {
 			return "", temporal.NewNonRetryableApplicationError("a skill step needs its name and version", "InvalidInput", nil)
 		}
 		name, version, args := in.Args[0], warp.ID(in.Args[1]), in.Args[2:]
-		files, err := l.version(ctx, name, version)
+		files, reviewed, err := l.reviewedVersion(ctx, name, version)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -125,7 +125,14 @@ func Command(a pirn.Agent, l *Library) weft.Arrow[plan.Input, string] {
 			}
 			return "", err
 		}
-		return pirn.Step(ctx, a, pirn.Question{Instruction: Instruction(name, args), Sources: pirn.Sources(in.Upstream), Skill: files})
+		grant, err := Connectors(files[SkillFile])
+		if err != nil {
+			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf("skill %s at %s: %v", name, version, err), "SkillSetup", nil)
+		}
+		if len(grant) > 0 && !reviewed {
+			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf("skill %s at %s asks for connectors (%s) but nobody reviewed it: import it again, and approve it", name, version, grant), "SkillSetup", nil)
+		}
+		return pirn.Step(ctx, a, pirn.Question{Instruction: Instruction(name, args), Sources: pirn.Sources(in.Upstream), Skill: files, Grant: grant})
 	}
 }
 

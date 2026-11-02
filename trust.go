@@ -198,7 +198,7 @@ func (l *Library) newest(ctx context.Context, name string) (warp.ID, error) {
 // Proposing the skill's newest version changes nothing and returns it;
 // any other version, even an older one, waits, since adding it would
 // change what the skill runs.
-func (l *Library) propose(ctx context.Context, files map[string][]byte, at time.Time, src *Source) (Skill, error) {
+func (l *Library) propose(ctx context.Context, files map[string][]byte, at time.Time, src *Source, extra ...warp.Trailer) (Skill, error) {
 	name, desc, err := Check(files)
 	if err != nil {
 		return Skill{}, err
@@ -231,12 +231,12 @@ func (l *Library) propose(ctx context.Context, files map[string][]byte, at time.
 				return Skill{}, err
 			}
 			if log[0].Tree == tree && !decided(log[0].Trailers) {
-				return Skill{Name: name, Description: desc, Version: tree, Commit: head, Source: sourceOf(log[0].Trailers), Pending: true}, nil
+				return Skill{Name: name, Description: desc, Version: tree, Commit: head, Source: sourceOf(log[0].Trailers), Pending: true, Created: createdOf(log[0].Trailers)}, nil
 			}
 			parents = []warp.ID{head}
 		}
 		commit, err := l.Store.Commit(ctx, warp.CommitSpec{Tree: tree, Parents: parents, Message: "pending skill " + name,
-			Trailers: sourceTrailers(src), Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
+			Trailers: append(sourceTrailers(src), extra...), Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
 		if err != nil {
 			return Skill{}, err
 		}
@@ -247,7 +247,7 @@ func (l *Library) propose(ctx context.Context, files map[string][]byte, at time.
 		if err != nil {
 			return Skill{}, err
 		}
-		return Skill{Name: name, Description: desc, Version: tree, Commit: commit, Source: src, Pending: true}, nil
+		return Skill{Name: name, Description: desc, Version: tree, Commit: commit, Source: src, Pending: true, Created: createdOf(extra)}, nil
 	}
 }
 
@@ -286,7 +286,7 @@ func (l *Library) pending(ctx context.Context, name string) (Skill, bool, error)
 	if s.Name != name {
 		return Skill{}, false, fmt.Errorf("%w: %s holds the skill %q", ErrInvalid, PendingPrefix+name, s.Name)
 	}
-	s.Commit, s.Source, s.Pending = c.ID, sourceOf(c.Trailers), true
+	s.Commit, s.Source, s.Pending, s.Created = c.ID, sourceOf(c.Trailers), true, createdOf(c.Trailers)
 	return s, true, nil
 }
 
@@ -440,7 +440,11 @@ func (l *Library) Approve(ctx context.Context, name string, version, replaces wa
 	if err != nil {
 		return Skill{}, err
 	}
-	sk, err := l.add(ctx, files, at, p.Source, []warp.Trailer{{Key: TrailerApprovedFrom, Value: string(p.Commit)}}, &replaces)
+	extra := []warp.Trailer{{Key: TrailerApprovedFrom, Value: string(p.Commit)}}
+	if p.Created != "" {
+		extra = append(extra, warp.Trailer{Key: TrailerCreatedFrom, Value: p.Created})
+	}
+	sk, err := l.add(ctx, files, at, p.Source, extra, &replaces)
 	if err != nil {
 		// The skill changed between the check and the add (review 17:
 		// the review stayed closed, saying approved). Reopen it, so it

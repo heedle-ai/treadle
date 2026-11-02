@@ -65,6 +65,9 @@ why the existing tool can't do it.
   `refs/treadle/pending/<name>` and are never a version, a command or a pin
   until `Approve` names exactly the version reviewed. Never let a pending
   tree reach `Skills`, `Versions`, `AddTo` or `Pinned`.
+- A skill declares the connectors its steps use (`metadata.connectors`),
+  never more than the worker grants. A skill created by Claude
+  (`treadle.Create`) always waits for review.
 - `TestLive_*` reaches github.com when `TREADLE_LIVE=1`; it isn't a guard.
 - `go.mod` replaces the heedle-ai modules with `../` checkouts until they
   are published; clone all repos as siblings.

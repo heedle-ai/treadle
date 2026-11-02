@@ -1,6 +1,7 @@
 package treadle_test
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -9,10 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heedle-ai/bobbin"
 	"github.com/heedle-ai/draft"
 	"github.com/heedle-ai/draft/registry"
+	"github.com/heedle-ai/pirn"
+	"github.com/heedle-ai/shuttle/plan"
 	"github.com/heedle-ai/treadle"
 	"github.com/heedle-ai/warp"
+	"go.temporal.io/sdk/temporal"
 )
 
 // change commits new contents for files in a repository skillRepo made.
@@ -279,5 +284,54 @@ func TestInv_FailedApprovalsReopen(t *testing.T) {
 		if (err == nil) != approved || err != nil && rerr != nil {
 			t.Fatalf("approve: %v; added %v; review: %v", err, approved, rerr)
 		}
+	}
+}
+
+// TestInv_ConnectorsNeedAReview: a skill that asks for connectors waits
+// for review even from a trusted prefix; once approved, its step gets
+// exactly what it asks, narrowed by the worker's connectors; and a
+// version that asks for connectors but only ever came in by a trusted
+// import (as before review 20) fails as SkillSetup before any container
+// starts. (Review 20.)
+func TestInv_ConnectorsNeedAReview(t *testing.T) {
+	l := newLibrary(t)
+	at := time.Unix(1700000000, 0)
+	asks := "---\nname: triage\ndescription: Triages bugs.\nmetadata:\n  connectors: \"linear/search_issues mail\"\n---\nGo.\n"
+	repo := skillRepo(t, map[string]string{"SKILL.md": asks}, nil)
+	must(0, l.Trust(ctx, repo[:strings.LastIndex(repo, "/")], at))
+	p := must(l.Import(ctx, treadle.Source{Repo: repo}, at))
+	if !p.Pending {
+		t.Fatalf("a trusted skill asking for connectors didn't wait: %+v", p)
+	}
+	v := must(l.Approve(ctx, "triage", p.Version, "", at))
+
+	t.Setenv("LINEAR_TOKEN", "t")
+	podman, log := fakePodman(t)
+	api := newScript(t)
+	cs := pirn.Connectors{{Name: "linear", URL: "https://mcp.linear.app/mcp", TokenEnv: "LINEAR_TOKEN"}, {Name: "mail", URL: "https://mail.example/mcp"}, {Name: "calendar", URL: "https://cal.example/mcp"}}
+	cmd := treadle.Command(pirn.Agent{Claude: pirn.Claude{APIKey: "k", BaseURL: api.srv.URL}, Runner: bobbin.Runner{Podman: podman}, Image: strings.Repeat("0", 64), Connectors: cs}, l)
+	out, err := cmd(ctx, plan.Input{Args: []string{"triage", string(v.Version)}})
+	var res pirn.AgentResult
+	if err != nil || json.Unmarshal([]byte(out), &res) != nil || res.Grant != "linear/search_issues mail" {
+		t.Fatalf("an approved skill's grant: %q %v", res.Grant, err)
+	}
+	if asked := strings.Join(api.asked, ""); !strings.Contains(asked, "mcp.linear.app") || strings.Contains(asked, "cal.example") {
+		t.Errorf("Claude was offered: %s", asked)
+	}
+
+	// A version that came in only by a trusted import, never reviewed.
+	old := "---\nname: notify\ndescription: Notifies.\nmetadata:\n  connectors: mail\n---\nGo.\n"
+	tree := must(l.Store.PutTree(ctx, []warp.Entry{{Name: "SKILL.md", Kind: warp.KindBlob, ID: must(l.Store.PutBlob(ctx, []byte(old)))}}))
+	c := must(l.Store.Commit(ctx, warp.CommitSpec{Tree: tree, Message: "skill notify", Trailers: []warp.Trailer{{Key: treadle.TrailerSource, Value: repo}},
+		Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}}))
+	must(0, l.Store.Advance(ctx, treadle.RefPrefix+"notify", "", c))
+	os.WriteFile(log, nil, 0o644)
+	_, err = cmd(ctx, plan.Input{Args: []string{"notify", string(tree)}})
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Type() != "SkillSetup" || !strings.Contains(err.Error(), "nobody reviewed it") {
+		t.Errorf("an unreviewed version asking for connectors: %v", err)
+	}
+	if b, _ := os.ReadFile(log); len(b) != 0 {
+		t.Errorf("a container started: %s", b)
 	}
 }

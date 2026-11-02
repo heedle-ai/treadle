@@ -302,7 +302,7 @@ func Catalog(ctx context.Context, repo, ref string) ([]CatalogEntry, error) {
 // Import fetches a skill from its source, with the source on its commit
 // (TrailerSource and the rest), so its history says where every version
 // came from. A source under a trusted prefix (Trusted) is kept as the
-// skill's newest version at once. Any other source waits for review: it
+// skill's newest version at once, unless it asks for connectors. Any other source waits for review: it
 // is kept on the skill's pending ref and returned with Pending set, and
 // becomes a version only once Approve names it. Importing the version a
 // skill already has changes nothing.
@@ -315,7 +315,9 @@ func (l *Library) Import(ctx context.Context, s Source, at time.Time) (Skill, er
 	if err != nil {
 		return Skill{}, err
 	}
-	if trustedBy(trusted, s.Repo) {
+	// A skill that asks for connectors waits for review even from a
+	// trusted prefix: a person approves what it may reach (review 20).
+	if g, _ := Connectors(files[SkillFile]); trustedBy(trusted, s.Repo) && len(g) == 0 {
 		return l.add(ctx, files, at, &s, nil, nil)
 	}
 	return l.propose(ctx, files, at, &s)
