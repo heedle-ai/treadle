@@ -78,6 +78,31 @@ A run must be checked against what it was compiled with, not what is newest when
 
 `Command` is the `Skill` activity. It reads the pinned version's folder from the library, checks it was added as a version of the skill it's named as, and runs one of pirn's agent steps (`pirn.Step`) with the folder in `/work/skill`, its `SKILL.md` in Claude's first message, the step's inputs in `/work/in`, and the instruction `Use the skill "weather" with these arguments: "Boston".` Everything else is an agent step's: a fresh container with no network, every command recorded, the files in `/work/out` kept. A version that wasn't added to the skill fails at once with `SkillSetup`, before any container starts. A skill's files are written into the container without their file modes, so its scripts are run with `sh`, as the example does.
 
+## Connectors a skill uses
+
+A skill that needs connectors ([pirn → Connectors](https://github.com/heedle-ai/pirn/wiki/How-It-Works#connectors)) says so in its front matter, as a space-separated string under `metadata`, where Anthropic's Agent Skills format keeps extra fields:
+
+```yaml
+---
+name: triage
+description: Triages this week's bugs by severity.
+metadata:
+  connectors: "linear/search_issues mail"
+---
+```
+
+A step running the skill is granted exactly that (`treadle.Connectors`), narrowed by the worker's connectors: a worker without them fails the step as setup before any container starts. The program can't widen it. The grant is part of the skill's files, so a review shows it (drawdown flags it in red), and approving the skill approves it. So a skill that asks for connectors always waits for review, even from a trusted prefix, and a step gets its connectors only if a person chose that version: approved it, or added it by hand. A version that came in only by a trusted import fails as setup; import it again and approve it. A malformed one, or front matter with any key twice, refuses the skill, and `Skill.Connectors` lists it wherever skills are listed.
+
+## Creating a skill from a description
+
+`loom skills -store DIR -create "Sum the second column of a CSV file" -agent-image ID` (or **Describe a skill** in drawdown) has Claude write the skill. The description is checked first (1 to 2 KiB of plain text, no control or invisible characters), before any agent runs. Then an agent step (`treadle.Create`) is told the description and to write `SKILL.md`, any scripts, and a test, `tests/test.sh`, which it runs until it passes, all in `/work/out` of a fresh container like any agent step's (`CreateInstruction`). Those files are the skill, checked as any folder is; a folder that isn't a valid skill, or whose files weren't all kept, is refused. The skill then waits for review like an untrusted import (`Library.Propose`), its commit carrying the description (`Skill-Created-From`), which its version keeps once approved and `Skill.Created` lists. Read its files and its test in the review before approving: Claude wrote them.
+
+## The first skills
+
+treadle ships two skills, in `skills/`: the hello world's two commands as skills. `find-evidence` has Claude report, for each named source, a line `NAME: delay|on-time: SUMMARY` from the step's inputs (and any connectors the step was granted), checked by its `scripts/check.sh`. `assess-claim` judges a claim from such reports: its `scripts/assess.sh` decides the verdict, by exactly the hello world's `assess` rule, and Claude explains it. Import them with `loom skills -store DIR -add skills/find-evidence` (and `skills/assess-claim`) from a checkout of this repo. Their names differ from the hello world's deterministic `source` and `assess`, which drawdown's example keeps, so both are usable side by side.
+
+`TestLaw_AssessSkillAgreesWithAssess` runs `assess.sh` and the hello world's `assess` on every subset of the hello world's sources, and checks their output is identical, and that every source report passes `check.sh`: the skill version reaches the same verdict.
+
 ## Laws
 
 A skill's steps are agent steps, so their answers can differ between runs; what holds is that a run is always checked against, run with and recorded with the versions its plan pins (`TestLaw_SkillRunsArePinned`), and loom's soundness laws 5 and 11 are stated with those pins.

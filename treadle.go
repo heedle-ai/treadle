@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -55,6 +56,12 @@ type Skill struct {
 	// Pending is true for an import waiting for review: it isn't a
 	// version of the skill, and no command runs it, until it's approved.
 	Pending bool `json:"pending,omitempty"`
+	// Connectors are what the skill's steps are granted (see Connectors),
+	// as pirn.ParseGrant reads them; empty for none.
+	Connectors string `json:"connectors,omitempty"`
+	// Created is the description this version was created from by
+	// Library.Create, if it was.
+	Created string `json:"created,omitempty"`
 }
 
 var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
@@ -110,6 +117,12 @@ func Meta(skillMD []byte) (name, description string, err error) {
 	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
 		return bad("front matter: %v", err)
 	}
+	if k := duplicateKey(&doc); k != "" {
+		return bad("front matter has the key %q twice (review 20: readers disagree on which one counts)", k)
+	}
+	if _, err := connectorsOf(&doc); err != nil {
+		return bad("%v", err)
+	}
 	// name and description must be YAML strings: not numbers, booleans,
 	// binary or anything else YAML would turn into one.
 	var m struct{ Name, Description string }
@@ -143,6 +156,91 @@ func Meta(skillMD []byte) (name, description string, err error) {
 		return bad("description must be 1 to 1024 characters, without < or > or control characters")
 	}
 	return m.Name, strings.TrimSpace(m.Description), nil
+}
+
+// Connectors is the grant a skill's SKILL.md declares: the connectors and
+// tools its steps may use (see pirn.ParseGrant), as the space-separated
+// string metadata.connectors in its front matter, such as
+//
+//	metadata:
+//	  connectors: "linear/search_issues mail"
+//
+// It's empty for a skill that declares none. A step running the skill is
+// granted exactly this, narrowed by the worker's connectors; the program
+// can't widen it. It's part of the skill, so a review shows it.
+func Connectors(skillMD []byte) (pirn.Grant, error) {
+	text := strings.ReplaceAll(string(skillMD), "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	end := -1
+	for i := 1; i < len(lines) && end < 0; i++ {
+		if strings.TrimRight(lines[i], " \t") == "---" {
+			end = i
+		}
+	}
+	if len(lines) == 0 || lines[0] != "---" || end < 0 {
+		return nil, fmt.Errorf("%w: %s has no front matter", ErrInvalid, SkillFile)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
+		return nil, fmt.Errorf("%w: %s: front matter: %v", ErrInvalid, SkillFile, err)
+	}
+	g, err := connectorsOf(&doc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s: %v", ErrInvalid, SkillFile, err)
+	}
+	return g, nil
+}
+
+// connectorsOf reads metadata.connectors from a front matter document.
+// duplicateKey is a key some mapping in n has twice, if any.
+func duplicateKey(n *yaml.Node) string {
+	if n.Kind == yaml.MappingNode {
+		seen := map[string]bool{}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k := n.Content[i].Value
+			if seen[k] {
+				return k
+			}
+			seen[k] = true
+		}
+	}
+	for _, c := range n.Content {
+		if k := duplicateKey(c); k != "" {
+			return k
+		}
+	}
+	return ""
+}
+
+func connectorsOf(doc *yaml.Node) (pirn.Grant, error) {
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return pirn.Grant{}, nil // Meta reports this
+	}
+	top := doc.Content[0].Content
+	for i := 0; i+1 < len(top); i += 2 {
+		if top[i].Value != "metadata" {
+			continue
+		}
+		md := top[i+1]
+		if md.Kind != yaml.MappingNode {
+			return nil, fmt.Errorf("metadata must be a mapping")
+		}
+		for j := 0; j+1 < len(md.Content); j += 2 {
+			if md.Content[j].Value != "connectors" {
+				continue
+			}
+			v := md.Content[j+1]
+			if v.Kind != yaml.ScalarNode || v.Tag != "!!str" {
+				return nil, fmt.Errorf("metadata.connectors must be a string, such as \"linear/search_issues mail\"")
+			}
+			g, err := pirn.ParseGrant(strings.Fields(v.Value))
+			if err != nil {
+				return nil, fmt.Errorf("metadata.connectors: %v", err)
+			}
+			return g, nil
+		}
+	}
+	return pirn.Grant{}, nil
 }
 
 // Check reports whether files are a skill pirn can run (pirn.CheckSkill),
@@ -253,7 +351,7 @@ func (l *Library) Skills(ctx context.Context) (skills []Skill, bad []error, err 
 		if err != nil {
 			return nil, nil, err
 		}
-		s.Source = sourceOf(ts)
+		s.Source, s.Created = sourceOf(ts), createdOf(ts)
 		skills = append(skills, s)
 	}
 	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
@@ -265,35 +363,46 @@ func (l *Library) Skills(ctx context.Context) (skills []Skill, bad []error, err 
 // folder, checked. Any other tree in the store, even one holding a
 // SKILL.md of that name, is refused.
 func (l *Library) version(ctx context.Context, name string, version warp.ID) (map[string][]byte, error) {
+	files, _, err := l.reviewedVersion(ctx, name, version)
+	return files, err
+}
+
+// reviewedVersion is version, and whether a person chose it: it was
+// approved after review (TrailerApprovedFrom) or added by hand (no
+// source), not only imported from a trusted prefix.
+func (l *Library) reviewedVersion(ctx context.Context, name string, version warp.ID) (map[string][]byte, bool, error) {
 	if !validName(name) {
-		return nil, fmt.Errorf("%w: skill name %q", ErrInvalid, name)
+		return nil, false, fmt.Errorf("%w: skill name %q", ErrInvalid, name)
 	}
 	head, ok, err := l.Store.Resolve(ctx, RefPrefix+name)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("%w: this worker has no skill %q", ErrInvalid, name)
+		return nil, false, fmt.Errorf("%w: this worker has no skill %q", ErrInvalid, name)
 	}
 	log, err := l.Store.Log(ctx, head, 0)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	added := false
+	added, reviewed := false, false
 	for _, c := range log {
-		added = added || c.Tree == version
+		if c.Tree == version {
+			added = true
+			reviewed = reviewed || sourceOf(c.Trailers) == nil || slices.ContainsFunc(c.Trailers, func(t warp.Trailer) bool { return t.Key == TrailerApprovedFrom })
+		}
 	}
 	if !added {
-		return nil, fmt.Errorf("%w: %s was never added as a version of the skill %q", ErrInvalid, version, name)
+		return nil, false, fmt.Errorf("%w: %s was never added as a version of the skill %q", ErrInvalid, version, name)
 	}
 	files, err := l.Files(ctx, version)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if got, _, _ := Meta(files[SkillFile]); got != name {
-		return nil, fmt.Errorf("%w: version %s is the skill %q, not %q", ErrInvalid, version, got, name)
+		return nil, false, fmt.Errorf("%w: version %s is the skill %q, not %q", ErrInvalid, version, got, name)
 	}
-	return files, nil
+	return files, reviewed, nil
 }
 
 // validName reports whether name can be a skill's name.
@@ -347,7 +456,7 @@ func (l *Library) Versions(ctx context.Context, name string) ([]Skill, error) {
 		if err != nil || n != name {
 			continue
 		}
-		out = append(out, Skill{Name: n, Description: desc, Version: c.Tree, Commit: c.ID, Source: sourceOf(c.Trailers)})
+		out = append(out, Skill{Name: n, Description: desc, Version: c.Tree, Commit: c.ID, Source: sourceOf(c.Trailers), Connectors: grantOf(b), Created: createdOf(c.Trailers)})
 	}
 	return out, nil
 }
@@ -407,7 +516,7 @@ func (l *Library) Folder(ctx context.Context, name string, version warp.ID) (Ski
 	if n != name {
 		return Skill{}, nil, nil, fmt.Errorf("%w: version %s is the skill %q, not %q", warp.ErrNotFound, version, n, name)
 	}
-	return Skill{Name: n, Description: desc, Version: version, Commit: commit.ID, Source: sourceOf(commit.Trailers)}, files, text, nil
+	return Skill{Name: n, Description: desc, Version: version, Commit: commit.ID, Source: sourceOf(commit.Trailers), Connectors: grantOf(text), Created: createdOf(commit.Trailers)}, files, text, nil
 }
 
 // Files returns a version's folder, checked as Add checks it.
@@ -457,7 +566,7 @@ func (l *Library) describe(ctx context.Context, tree warp.ID) (Skill, error) {
 			if err != nil {
 				return Skill{}, err
 			}
-			return Skill{Name: name, Description: desc, Version: tree}, nil
+			return Skill{Name: name, Description: desc, Version: tree, Connectors: grantOf(b)}, nil
 		}
 	}
 	return Skill{}, fmt.Errorf("%w: version %s has no %s", ErrInvalid, tree, SkillFile)
@@ -494,4 +603,10 @@ func putDir(ctx context.Context, s *warp.Store, files map[string][]byte, prefix 
 		es = append(es, warp.Entry{Name: name, Kind: warp.KindTree, ID: id})
 	}
 	return s.PutTree(ctx, es)
+}
+
+// grantOf is a valid SKILL.md's declared connectors, as a string.
+func grantOf(skillMD []byte) string {
+	g, _ := Connectors(skillMD)
+	return g.String()
 }
