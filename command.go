@@ -35,22 +35,25 @@ func Spec(s Skill) registry.BuiltinSpec {
 	}
 }
 
-// AddTo registers the newest version of every skill in reg. A skill named
-// like a command reg already has fails, naming both.
-func (l *Library) AddTo(ctx context.Context, reg *registry.Registry) error {
-	skills, err := l.Skills(ctx)
+// AddTo registers the newest version of every skill in reg. A skill that
+// isn't valid, or is named like a command reg already has, is left out and
+// listed in skipped, so one bad skill never stops a worker; err is only
+// for failing to read the store.
+func (l *Library) AddTo(ctx context.Context, reg *registry.Registry) (skipped []error, err error) {
+	skills, skipped, err := l.Skills(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, s := range skills {
 		if _, taken := reg.Lookup(s.Name); taken {
-			return fmt.Errorf("%w: the skill %q has the name of a command this worker already has", ErrInvalid, s.Name)
+			skipped = append(skipped, fmt.Errorf("%w: the skill %q has the name of a command this worker already has", ErrInvalid, s.Name))
+			continue
 		}
 		if err := reg.Register(Spec(s)); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return skipped, nil
 }
 
 // Pins are the skill versions a plan uses, by name.
@@ -83,13 +86,12 @@ func (l *Library) Pinned(ctx context.Context, base *registry.Registry, p plan.Pl
 		return nil, err
 	}
 	for name, version := range pins {
-		s, err := l.describe(ctx, version)
+		files, err := l.version(ctx, name, version)
 		if err != nil {
-			return nil, fmt.Errorf("%w: the plan pins %s to %s, which this worker doesn't have: %v", ErrInvalid, name, version, err)
+			return nil, fmt.Errorf("the plan pins %s to %s: %w", name, version, err)
 		}
-		if s.Name != name {
-			return nil, fmt.Errorf("%w: the plan pins %s to %s, which is the skill %q", ErrInvalid, name, version, s.Name)
-		}
+		_, desc, _ := Meta(files[SkillFile])
+		s := Skill{Name: name, Description: desc, Version: version}
 		if _, taken := base.Lookup(name); taken {
 			return nil, fmt.Errorf("%w: the skill %q has the name of a command this worker already has", ErrInvalid, name)
 		}
@@ -113,13 +115,7 @@ func Command(a pirn.Agent, l *Library) weft.Arrow[plan.Input, string] {
 			return "", temporal.NewNonRetryableApplicationError("a skill step needs its name and version", "InvalidInput", nil)
 		}
 		name, version, args := in.Args[0], warp.ID(in.Args[1]), in.Args[2:]
-		files, err := l.Files(ctx, version)
-		if err == nil {
-			var got string
-			if got, _, err = Meta(files[SkillFile]); err == nil && got != name {
-				err = fmt.Errorf("%w: version %s is the skill %q, not %q", ErrInvalid, version, got, name)
-			}
-		}
+		files, err := l.version(ctx, name, version)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
@@ -151,13 +147,13 @@ type Activities interface {
 }
 
 // Register adds every skill in l to reg (AddTo) and the Skill activity,
-// running steps on a, to a worker.
-func Register(ctx context.Context, reg *registry.Registry, w Activities, a pirn.Agent, l *Library) error {
-	if err := l.AddTo(ctx, reg); err != nil {
-		return err
+// running steps on a, to a worker, returning the skills it left out.
+func Register(ctx context.Context, reg *registry.Registry, w Activities, a pirn.Agent, l *Library) (skipped []error, err error) {
+	if skipped, err = l.AddTo(ctx, reg); err != nil {
+		return nil, err
 	}
 	w.RegisterActivityWithOptions(shuttle.ArrowAsActivity(Command(a, l)), activity.RegisterOptions{Name: ActivityName})
-	return nil
+	return skipped, nil
 }
 
 // Uses names, for loom's Recorder.Uses, each skill version a plan pins as
@@ -170,7 +166,7 @@ func (l *Library) Uses(ctx context.Context, p plan.Plan) ([]warp.Entry, error) {
 	}
 	var out []warp.Entry
 	for name, version := range pins {
-		if _, err := l.describe(ctx, version); err != nil {
+		if _, err := l.version(ctx, name, version); err != nil {
 			return nil, err
 		}
 		out = append(out, warp.Entry{Name: name, Kind: warp.KindTree, ID: version})
