@@ -3,6 +3,7 @@ package treadle_test
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -148,5 +149,98 @@ func TestInv_CatalogListsARepositorysSkills(t *testing.T) {
 	}
 	if _, err := treadle.Catalog(context.Background(), "--upload-pack=x", ""); !errors.Is(err, treadle.ErrInvalid) {
 		t.Errorf("catalog of a bad URL: %v", err)
+	}
+}
+
+// TestInv_ImportsAreExactBytes: an imported skill's files are the
+// commit's bytes, whatever the repository's .gitattributes or the
+// machine's settings say (review 14: eol=crlf and ident changed them, so
+// one source gave different versions on different machines); a symbolic
+// link is refused.
+func TestInv_ImportsAreExactBytes(t *testing.T) {
+	body := md("exact", "Keeps its bytes.") + "$Id$\nline two\n"
+	repo := skillRepo(t, map[string]string{".gitattributes": "* text eol=crlf ident\n", "exact/SKILL.md": body, "exact/run.sh": "echo hi\n"}, nil)
+	files, _, err := treadle.Fetch(ctx, treadle.Source{Repo: repo, Path: "exact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(files["SKILL.md"]) != body || string(files["run.sh"]) != "echo hi\n" {
+		t.Errorf("bytes changed: %q", files["SKILL.md"])
+	}
+	linked := skillRepo(t, map[string]string{"l/SKILL.md": md("l", "Linked.")}, map[string]string{"l/x": "SKILL.md"})
+	if _, _, err := treadle.Fetch(ctx, treadle.Source{Repo: linked, Path: "l"}); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a symbolic link: %v", err)
+	}
+}
+
+// TestInv_ImportSizesAreCheckedFirst: a folder over the limits is refused
+// before its files are read, from disk or from Git. (Review 14: a 300 MB
+// file was read whole before being refused.)
+func TestInv_ImportSizesAreCheckedFirst(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md("big", "Big.")), 0o644)
+	f, _ := os.Create(filepath.Join(dir, "huge.bin"))
+	f.Truncate(1 << 40) // a sparse terabyte: reading it would never end
+	f.Close()
+	if _, err := treadle.ReadFolder(dir); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a terabyte file: %v", err)
+	}
+	repo := skillRepo(t, map[string]string{"big/SKILL.md": md("big", "Big."), "big/huge.bin": strings.Repeat("x", 17<<20)}, nil)
+	if _, _, err := treadle.Fetch(ctx, treadle.Source{Repo: repo, Path: "big"}); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a 17 MiB file: %v", err)
+	}
+}
+
+// TestInv_StalledFetchesEnd: a fetch from a host that never answers ends
+// when its context does, leaving no git process behind. (Review 14: it
+// hung forever, and git-remote-https outlived it.)
+func TestInv_StalledFetchesEnd(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // accept, and never answer
+		}
+	}()
+	tctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, _, err = treadle.Fetch(tctx, treadle.Source{Repo: "https://" + l.Addr().String() + "/x/y"})
+	if err == nil || time.Since(start) > 10*time.Second {
+		t.Errorf("after %v: %v", time.Since(start), err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if out, _ := exec.Command("pgrep", "-f", "remote-https https://"+l.Addr().String()).Output(); len(out) != 0 {
+		t.Errorf("git processes left: %s", out)
+	}
+}
+
+// TestInv_SourcePathsAreSafe: a source path or a catalog entry is only
+// segments of letters, digits, ".", "_" and "-", so nothing reaches git's
+// sparse-checkout patterns or a terminal as anything else. (Review 14.)
+func TestInv_SourcePathsAreSafe(t *testing.T) {
+	repo := skillRepo(t, map[string]string{"ok/SKILL.md": md("ok", "Fine."), "x\x1b[31mred/ok/SKILL.md": md("ok", "Coloured."),
+		"weird/SKILL.md/big.bin": strings.Repeat("x", 1000)}, nil)
+	for _, p := range []string{"*", "o*", "a\nb", "a[b]", "!x", `a\b`, "x\x1b[31m"} {
+		if _, err := (&treadle.Library{}).Import(ctx, treadle.Source{Repo: repo, Path: p}, time.Now()); !errors.Is(err, treadle.ErrInvalid) {
+			t.Errorf("path %q: %v", p, err)
+		}
+	}
+	cat, err := treadle.Catalog(ctx, repo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cat) != 1 || cat[0].Source.Path != "ok" {
+		t.Errorf("catalog %+v", cat)
+	}
+	if _, err := treadle.Catalog(ctx, "https://user:SECRET@github.com/a/b", ""); err == nil || strings.Contains(err.Error(), "SECRET") {
+		t.Errorf("a URL's credentials: %v", err)
 	}
 }

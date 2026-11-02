@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/heedle-ai/pirn"
 	"github.com/heedle-ai/warp"
 )
 
@@ -46,7 +49,7 @@ var (
 func (s Source) check() error {
 	switch {
 	case !repoURL.MatchString(s.Repo) || strings.Contains(s.Repo, ".."):
-		return fmt.Errorf("%w: repository %q (want an https:// or file:// URL)", ErrInvalid, s.Repo)
+		return fmt.Errorf("%w: repository %q (want an https:// or file:// URL, without credentials)", ErrInvalid, redact(s.Repo))
 	case s.Ref != "" && (!refName.MatchString(s.Ref) || strings.Contains(s.Ref, "..") || strings.HasPrefix(s.Ref, "-")):
 		return fmt.Errorf("%w: ref %q", ErrInvalid, s.Ref)
 	case s.Path != "" && !skillPath(s.Path):
@@ -55,14 +58,12 @@ func (s Source) check() error {
 	return nil
 }
 
-func skillPath(p string) bool {
-	for _, seg := range strings.Split(p, "/") {
-		if seg == "" || seg == "." || seg == ".." || strings.HasPrefix(seg, ".") || strings.HasPrefix(seg, "-") {
-			return false
-		}
-	}
-	return true
-}
+// safePath is a relative path of segments of letters, digits, ".", "_"
+// and "-", none starting with "." or "-": nothing a sparse-checkout
+// pattern, a shell or a terminal reads specially.
+var safePath = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*$`)
+
+func skillPath(p string) bool { return len(p) <= 255 && safePath.MatchString(p) }
 
 // ParseGitHub reads a GitHub link to a skill's folder,
 // https://github.com/OWNER/REPO/tree/REF/PATH, or to a repository whose
@@ -77,14 +78,24 @@ func ParseGitHub(link string) (Source, error) {
 	return s, s.check()
 }
 
+// FetchTimeout bounds a fetch or a catalog whose context has no deadline
+// of its own, so a host that never answers can't hang it.
+const FetchTimeout = 5 * time.Minute
+
 // Fetch reads a skill's folder from its source with the git CLI: a
 // shallow, sparse clone of just that folder into a temporary directory,
-// removed afterwards. It returns the folder (ReadFolder's rules) and the
-// source with Commit set.
+// removed afterwards. The files are then read from Git's own objects, not
+// the checked-out folder, so their bytes are exactly the commit's: no
+// line-ending or attribute conversion, and no file-system case folding.
+// Their number and sizes are checked before any is read. Hidden files and
+// folders are left out; a symbolic link or submodule refuses the folder.
+// It returns the folder and the source with Commit set.
 func Fetch(ctx context.Context, s Source) (map[string][]byte, Source, error) {
 	if err := s.check(); err != nil {
 		return nil, s, err
 	}
+	ctx, cancel := withDeadline(ctx)
+	defer cancel()
 	dir, err := os.MkdirTemp("", "treadle-fetch-")
 	if err != nil {
 		return nil, s, err
@@ -97,17 +108,82 @@ func Fetch(ctx context.Context, s Source) (map[string][]byte, Source, error) {
 	if err := sparseClone(ctx, dir, s, pattern); err != nil {
 		return nil, s, err
 	}
-	commit, err := git(ctx, dir+"/src", "rev-parse", "HEAD")
+	src := dir + "/src"
+	commit, err := git(ctx, src, "rev-parse", "HEAD")
 	if err != nil {
 		return nil, s, err
 	}
 	s.Commit = strings.TrimSpace(commit)
-	folder := filepath.Join(dir, "src", filepath.FromSlash(s.Path))
-	if info, err := os.Lstat(folder); err != nil || !info.IsDir() {
+	treeish := "HEAD"
+	if s.Path != "" {
+		treeish = "HEAD:" + s.Path
+	}
+	if kind, err := git(ctx, src, "cat-file", "-t", treeish); err != nil || strings.TrimSpace(kind) != "tree" {
 		return nil, s, fmt.Errorf("%w: %s has no folder %q at %s", ErrInvalid, s.Repo, s.Path, s.Commit)
 	}
-	files, err := ReadFolder(folder)
-	return files, s, err
+	list, err := git(ctx, src, "ls-tree", "-r", "-l", "-z", treeish)
+	if err != nil {
+		return nil, s, err
+	}
+	type entry struct{ path, id string }
+	var want []entry
+	var total int64
+	for _, rec := range strings.Split(strings.TrimSuffix(list, "\x00"), "\x00") {
+		if rec == "" {
+			continue
+		}
+		meta, p, ok := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		if !ok || len(f) != 4 {
+			return nil, s, fmt.Errorf("treadle: unexpected ls-tree output %q", rec)
+		}
+		if hidden(p) {
+			continue
+		}
+		switch f[0] {
+		case "100644", "100755":
+		case "120000":
+			return nil, s, fmt.Errorf("%w: %s is a symbolic link", ErrInvalid, p)
+		default:
+			return nil, s, fmt.Errorf("%w: %s isn't a regular file (mode %s)", ErrInvalid, p, f[0])
+		}
+		size, err := strconv.ParseInt(f[3], 10, 64)
+		if err != nil {
+			return nil, s, fmt.Errorf("treadle: unexpected ls-tree size %q", f[3])
+		}
+		total += size
+		want = append(want, entry{p, f[2]})
+		if len(want) > pirn.MaxSkillFiles || total > pirn.MaxSkillBytes {
+			return nil, s, fmt.Errorf("%w: a skill has at most %d files and %d bytes", ErrInvalid, pirn.MaxSkillFiles, pirn.MaxSkillBytes)
+		}
+	}
+	files := make(map[string][]byte, len(want))
+	for _, e := range want {
+		b, err := git(ctx, src, "cat-file", "blob", e.id)
+		if err != nil {
+			return nil, s, err
+		}
+		files[e.path] = []byte(b)
+	}
+	return files, s, nil
+}
+
+// hidden reports whether a path has a segment starting with ".".
+func hidden(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if strings.HasPrefix(seg, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// withDeadline is ctx, with FetchTimeout if it has no deadline.
+func withDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, FetchTimeout)
 }
 
 // CatalogEntry is one skill a repository holds.
@@ -118,20 +194,30 @@ type CatalogEntry struct {
 	Problem     string `json:"problem,omitempty"` // why it can't be imported as it is
 }
 
+// MaxSkillMD is the largest SKILL.md a catalog reads, or loom accepts
+// pasted.
+const MaxSkillMD = 1 << 20
+
 // Catalog lists the skills a repository holds: every folder, up to three
 // levels down, whose SKILL.md treadle can read, fetching only those
-// files. A SKILL.md treadle refuses is listed with its Problem.
+// files. A SKILL.md treadle refuses is listed with its Problem; a folder
+// whose path treadle couldn't import is left out.
 func Catalog(ctx context.Context, repo, ref string) ([]CatalogEntry, error) {
 	s := Source{Repo: repo, Ref: ref}
 	if err := s.check(); err != nil {
 		return nil, err
 	}
+	ctx, cancel := withDeadline(ctx)
+	defer cancel()
 	dir, err := os.MkdirTemp("", "treadle-catalog-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
-	if err := sparseClone(ctx, dir, s, "/SKILL.md", "/*/SKILL.md", "/*/*/SKILL.md", "/*/*/*/SKILL.md"); err != nil {
+	// Only files named SKILL.md: a trailing / makes the ! patterns leave
+	// out folders of that name, and everything in them.
+	if err := sparseClone(ctx, dir, s, "/SKILL.md", "/*/SKILL.md", "/*/*/SKILL.md", "/*/*/*/SKILL.md",
+		"!/SKILL.md/", "!/*/SKILL.md/", "!/*/*/SKILL.md/", "!/*/*/*/SKILL.md/"); err != nil {
 		return nil, err
 	}
 	commit, err := git(ctx, dir+"/src", "rev-parse", "HEAD")
@@ -155,9 +241,21 @@ func Catalog(ctx context.Context, repo, ref string) ([]CatalogEntry, error) {
 		if err != nil {
 			return err
 		}
+		if rel != "." && !skillPath(filepath.ToSlash(rel)) {
+			return nil // a folder name treadle can't import, or print safely
+		}
 		e := CatalogEntry{Source: s}
 		if rel != "." {
 			e.Source.Path = filepath.ToSlash(rel)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Size() > MaxSkillMD {
+			e.Problem = fmt.Sprintf("its SKILL.md is over %d bytes", MaxSkillMD)
+			out = append(out, e)
+			return nil
 		}
 		b, err := os.ReadFile(p)
 		if err != nil {
@@ -210,16 +308,26 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=user"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1")
+	// git starts helpers (git-remote-https) that outlive it if only it is
+	// killed: give it its own process group, and kill the group.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return "", fmt.Errorf("treadle: git %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("treadle: git %s: %v: %s", args[0], err, redact(strings.TrimSpace(stderr.String())))
 	}
 	return out.String(), nil
 }
+
+var userinfo = regexp.MustCompile(`://[^/@\s]*@`)
+
+// redact drops credentials (user:token@) from URLs in text.
+func redact(text string) string { return userinfo.ReplaceAllString(text, "://") }
 
 // ReadFolder reads every regular file under dir, by "/"-separated path,
 // as a skill's folder. Hidden files and folders (.git, .DS_Store) aren't
@@ -227,6 +335,7 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 // files are refused, since a skill is its files' bytes.
 func ReadFolder(dir string) (map[string][]byte, error) {
 	files := map[string][]byte{}
+	var total int64
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -242,6 +351,14 @@ func ReadFolder(dir string) (map[string][]byte, error) {
 		}
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("%w: %s isn't a regular file", ErrInvalid, p)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		// Counted before reading, so one huge file is refused unread.
+		if total += info.Size(); len(files) >= pirn.MaxSkillFiles || total > pirn.MaxSkillBytes {
+			return fmt.Errorf("%w: a skill has at most %d files and %d bytes", ErrInvalid, pirn.MaxSkillFiles, pirn.MaxSkillBytes)
 		}
 		rel, err := filepath.Rel(dir, p)
 		if err != nil {

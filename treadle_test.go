@@ -355,3 +355,44 @@ func TestInv_ConcurrentAddsAgree(t *testing.T) {
 		t.Errorf("%d versions", len(vs))
 	}
 }
+
+// TestInv_VersionsSkipWhatCantRun: a version that isn't a valid skill of
+// its name is left out of Versions, so the rest stay readable; Folder
+// gives one version's files and SKILL.md, only for a version added to
+// that skill, from its newest commit; names past 64 characters are
+// refused. (Review 15: one bad commit hid a whole skill, and a version was
+// served under another skill's name.)
+func TestInv_VersionsSkipWhatCantRun(t *testing.T) {
+	l := newLibrary(t)
+	at := time.Unix(1700000000, 0)
+	bad := must(l.Store.PutTree(ctx, []warp.Entry{{Name: "x", Kind: warp.KindBlob, ID: must(l.Store.PutBlob(ctx, []byte("x")))}}))
+	c := must(l.Store.Commit(ctx, warp.CommitSpec{Tree: bad, Message: "bad", Author: warp.Signature{Name: "t", Email: "t@x", When: at}}))
+	if err := l.Store.Advance(ctx, treadle.RefPrefix+"rain", "", c); err != nil {
+		t.Fatal(err)
+	}
+	a := must(l.Add(ctx, skill("rain", "a"), at))
+	must(l.Add(ctx, skill("rain", "b"), at.Add(time.Minute)))
+	again := must(l.Add(ctx, skill("rain", "a"), at.Add(2*time.Minute)))
+	vs := must(l.Versions(ctx, "rain"))
+	if len(vs) != 3 || vs[0].Version != a.Version || vs[2].Version != a.Version {
+		t.Errorf("versions %+v", vs)
+	}
+	s, files, text, err := l.Folder(ctx, "rain", a.Version)
+	if err != nil || s.Commit != again.Commit || len(files) != 1 || !strings.HasSuffix(string(text), "a") {
+		t.Errorf("folder: %+v %v %v", s, files, err)
+	}
+	w := must(l.Add(ctx, skill("weather", "x"), at))
+	l.Store.Advance(ctx, treadle.RefPrefix+"other", "", w.Commit)
+	if vs := must(l.Versions(ctx, "other")); len(vs) != 0 {
+		t.Errorf("weather listed as other: %+v", vs)
+	}
+	if _, _, _, err := l.Folder(ctx, "other", w.Version); !errors.Is(err, warp.ErrNotFound) {
+		t.Errorf("weather served as other: %v", err)
+	}
+	if _, _, _, err := l.Folder(ctx, "rain", bad); !errors.Is(err, treadle.ErrInvalid) && !errors.Is(err, warp.ErrNotFound) {
+		t.Errorf("the bad version: %v", err)
+	}
+	if _, err := l.Versions(ctx, strings.Repeat("a", 65)); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a long name: %v", err)
+	}
+}
