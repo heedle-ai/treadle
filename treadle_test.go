@@ -396,3 +396,28 @@ func TestInv_VersionsSkipWhatCantRun(t *testing.T) {
 		t.Errorf("a long name: %v", err)
 	}
 }
+
+// TestInv_NewSkillsNeedNoRestart: a worker checks each run against the
+// library as it is when the run starts (Library.Pinned), so a skill added
+// or approved after the worker started runs without a restart, once a
+// fresh compile (loom compile -store, drawdown) pins it.
+func TestInv_NewSkillsNeedNoRestart(t *testing.T) {
+	l := newLibrary(t)
+	started := draft.DefaultRegistry()
+	if _, err := l.AddTo(ctx, started); err != nil {
+		t.Fatal(err)
+	}
+	check := &loom.Checker{Registry: started, RegistryFor: func(ctx context.Context, p plan.Plan) (*registry.Registry, error) {
+		return l.Pinned(ctx, draft.DefaultRegistry(), p)
+	}}
+	must(l.Add(ctx, skill("rain", "Say RAIN."), time.Unix(1700000000, 0)))
+	fresh := draft.DefaultRegistry()
+	if _, err := l.AddTo(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	src := `(rain "today")`
+	p := must(loom.Compile(ctx, fresh, src))
+	if err := check.Check(ctx, loom.RunInput{Program: src, Plan: p, Ref: loom.DefaultRef}); err != nil {
+		t.Errorf("a skill added after the worker started failed its check: %v", err)
+	}
+}

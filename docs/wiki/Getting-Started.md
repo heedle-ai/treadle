@@ -50,7 +50,7 @@ The compiled plan's node runs the activity `Skill`, with the skill's name and th
 "args": ["weather", "254277ed5f35e5cfac9ab7e18f87d05061850245", "Boston"]
 ```
 
-To run it, start a worker on that store with an Anthropic API key and an agent image, as for any agent step ([pirn → Agent steps](https://github.com/heedle-ai/pirn/wiki/Getting-Started)), `loom worker -store ~/skills-demo.git -agent-image <image ID>`, and submit with the same store: `loom run -store ~/skills-demo.git '(weather "Boston")'`. A worker registers the store's skills when it starts; restart it to pick up new ones. drawdown does the same with its `-store`.
+To run it, start a worker on that store with an Anthropic API key and an agent image, as for any agent step ([pirn → Agent steps](https://github.com/heedle-ai/pirn/wiki/Getting-Started)), `loom worker -store ~/skills-demo.git -agent-image <image ID>`, and submit with the same store: `loom run -store ~/skills-demo.git '(weather "Boston")'`. A skill added while the worker runs needs no restart: each run is checked against the store as it is then. drawdown, with its `-store`, compiles with the store's newest skills every time.
 
 ## 4. Import skills
 

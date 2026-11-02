@@ -64,7 +64,7 @@ loom skills -store ~/skills.git -reject pdf@8b61e7d0b4ba45033cdaf7948d77d7208853
 loom skills -store ~/skills.git -trust https://github.com/your-org
 ```
 
-For a change to a skill, `-review` prints `-approve NAME@VERSION -replacing CURRENT`. It shows control and format characters in the files as `\u` escapes, so a file can't drive your terminal, and it lists the files git takes for binary, whose contents the diff can't show: read those yourself. drawdown lists imports waiting for review and shows the same review, read only.
+For a change to a skill, `-review` prints `-approve NAME@VERSION -replacing CURRENT`. It shows control and format characters in the files as `\u` escapes, so a file can't drive your terminal, and it lists the files git takes for binary, whose contents the diff can't show: read those yourself. drawdown lists imports waiting for review, shows the same review, and approves or rejects from it, by running loom's skills workflow on a worker.
 
 ## A skill is a command, pinned by its plan
 
@@ -72,7 +72,7 @@ For a change to a skill, `-review` prints `-approve NAME@VERSION -replacing CURR
 
 `Library.AddTo` registers each skill's newest version as a draft command named after it (`Spec`). Its plan nodes run the activity `Skill`, with two [Bound](https://github.com/heedle-ai/draft/wiki/Adding-Commands) arguments first: the skill's name and the version. So a plan says exactly which version of each skill it uses. A skill named like a command the worker already has is left out and reported (`loom` and drawdown print it), so one bad skill never stops a worker.
 
-A run must be checked against what it was compiled with, not what is newest when it runs, so loom's check uses `Library.Pinned`: the worker's commands, with each skill the plan uses registered at the version the plan pins. A pin must be a version that was **added** to that skill (the tree of a commit on its ref) and pass `Check` again; any other tree in the store is refused, even one whose `SKILL.md` has the skill's name, as an agent could write into its `/work/out`. A version that wasn't added, or one skill pinned to two versions, fails the check (`ProgramPlanMismatch`); a store that fails to answer is retried. And loom records each pinned version's tree under the run's `uses/<name>` (`Library.Uses`), so the record keeps the skill's exact folder wherever its history is cloned or pushed. These are loom's `Checker.RegistryFor` and `Recorder.Uses`; `loom worker` and drawdown set both.
+A run must be checked against what it was compiled with, not what is newest when it runs, so loom's check uses `Library.Pinned`: the worker's commands, with each skill the plan uses registered at the version the plan pins. A pin must be a version that was **added** to that skill (the tree of a commit on its ref) and pass `Check` again; any other tree in the store is refused, even one whose `SKILL.md` has the skill's name, as an agent could write into its `/work/out`. A version that wasn't added, or one skill pinned to two versions, fails the check (`ProgramPlanMismatch`); a store that fails to answer is retried. And loom records each pinned version's tree under the run's `uses/<name>` (`Library.Uses`), so the record keeps the skill's exact folder wherever its history is cloned or pushed. These are loom's `Checker.RegistryFor` and `Recorder.Uses`; `loom worker` and drawdown set both. Because each run is checked against the library as it is when the run starts, a skill added or approved while a worker runs needs no restart: compile with the store again (`loom compile -store`, `loom run -store`, or drawdown, which reads the store's newest skills on every compile) and run.
 
 ## A skill step
 
@@ -84,7 +84,6 @@ A skill's steps are agent steps, so their answers can differ between runs; what 
 
 ## Where it stops
 
-- **New skills need a restart.** A worker registers the store's skills when it starts.
 - **Submitting needs the store too.** `loom compile` and `loom run` take `-store`, so a program can use the store's skills; drawdown uses its own `-store`.
 - **Review is by repository, not by author.** A trusted prefix trusts every branch of every repository under it, and whoever can push there.
-- **Reviews happen at the terminal.** drawdown shows them, but approving from the page is **Planned** (roadmap 3.8).
+- **Trusting is done at the terminal.** drawdown can import, add, approve and reject (through loom's skills workflow on a worker), but trusted prefixes are set only with `loom skills -trust`.
