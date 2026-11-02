@@ -61,6 +61,10 @@ why the existing tool can't do it.
 - A skill step is one of pirn's agent steps (`pirn.Step`) with the folder in
   `/work/skill`. The only process treadle runs is `git`, to fetch imports
   (shallow, sparse, no prompts or hooks, the URL after `--`).
+- Imports from repositories that aren't trusted wait on
+  `refs/treadle/pending/<name>` and are never a version, a command or a pin
+  until `Approve` names exactly the version reviewed. Never let a pending
+  tree reach `Skills`, `Versions`, `AddTo` or `Pinned`.
 - `TestLive_*` reaches github.com when `TREADLE_LIVE=1`; it isn't a guard.
 - `go.mod` replaces the heedle-ai modules with `../` checkouts until they
   are published; clone all repos as siblings.

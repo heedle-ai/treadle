@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="400" viewBox="0 0 680 400" role="img"><title>Importing a skill, with review</title><desc>Importing a skill: if its repository is under a trusted prefix, it becomes the skill's newest version, and so a command, at once. Otherwise it waits for review on refs/treadle/pending/NAME. Then review shows its files side by side with its diff from the newest version. Then approving exactly that NAME@VERSION makes it the skill's newest version; rejecting it closes the review with a Skill-Rejected commit.</desc><style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.w{stroke:#5F5E5A;stroke-width:1.5;fill:none}
+.d{stroke:#888780;stroke-width:0.8;fill:none;stroke-dasharray:5 4}
+.l{font-size:12px;fill:#5F5E5A}.f{font-size:13px;fill:#444441}
+.t1{font-size:14px;font-weight:600}.t2{font-size:12px}
+.p rect{fill:#EEEDFE;stroke:#534AB7}.p .t1{fill:#3C3489}.p .t2{fill:#534AB7}
+.g rect{fill:#E1F5EE;stroke:#0F6E56}.g .t1{fill:#085041}.g .t2{fill:#0F6E56}
+.c rect{fill:#FAECE7;stroke:#993C1D}.c .t1{fill:#712B13}.c .t2{fill:#993C1D}
+.n rect{fill:#F1EFE8;stroke:#5F5E5A}.n .t1{fill:#444441}.n .t2{fill:#5F5E5A}
+@media (prefers-color-scheme:dark){
+.w{stroke:#B4B2A9}.d{stroke:#888780}.l{fill:#B4B2A9}.f{fill:#D3D1C7}
+.p rect{fill:#3C3489;stroke:#AFA9EC}.p .t1{fill:#EEEDFE}.p .t2{fill:#CECBF6}
+.g rect{fill:#085041;stroke:#5DCAA5}.g .t1{fill:#E1F5EE}.g .t2{fill:#9FE1CB}
+.c rect{fill:#712B13;stroke:#F0997B}.c .t1{fill:#FAECE7}.c .t2{fill:#F5C4B3}
+.n rect{fill:#444441;stroke:#B4B2A9}.n .t1{fill:#F1EFE8}.n .t2{fill:#D3D1C7}}
+</style>
+<g class="p"><rect x="190" y="24" width="300" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="340.0" y="40" text-anchor="middle" dominant-baseline="central">import</text><text class="t2" x="340.0" y="59" text-anchor="middle" dominant-baseline="central">loom skills -import LINK</text></g>
+<path class="w" d="M340 72 L340 100 M340 100 L95 100 L95 330 M340 100 L515 100 L515 132"/>
+<text class="l" x="103" y="124" text-anchor="start" dominant-baseline="central">repository under a trusted prefix</text>
+<text class="l" x="523" y="116" text-anchor="start" dominant-baseline="central">otherwise</text>
+<g class="c"><rect x="380" y="132" width="270" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="515.0" y="148" text-anchor="middle" dominant-baseline="central">waiting for review</text><text class="t2" x="515.0" y="167" text-anchor="middle" dominant-baseline="central">refs/treadle/pending/NAME</text></g>
+<path class="w" d="M515 180 L515 226"/>
+<g class="c"><rect x="380" y="226" width="270" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="515.0" y="242" text-anchor="middle" dominant-baseline="central">review</text><text class="t2" x="515.0" y="261" text-anchor="middle" dominant-baseline="central">files ⊗ diff from the newest version</text></g>
+<path class="w" d="M380 250 L235 250 L235 330"/>
+<text class="l" x="227" y="290" text-anchor="end" dominant-baseline="central">approve NAME@VERSION</text>
+<path class="w" d="M515 274 L515 330"/>
+<text class="l" x="523" y="302" text-anchor="start" dominant-baseline="central">reject NAME@VERSION</text>
+<g class="g"><rect x="30" y="330" width="290" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="175.0" y="346" text-anchor="middle" dominant-baseline="central">the skill's newest version</text><text class="t2" x="175.0" y="365" text-anchor="middle" dominant-baseline="central">refs/treadle/skills/NAME: a command</text></g>
+<g class="n"><rect x="380" y="330" width="270" height="48" rx="6" stroke-width="0.8"/><text class="t1" x="515.0" y="346" text-anchor="middle" dominant-baseline="central">closed</text><text class="t2" x="515.0" y="365" text-anchor="middle" dominant-baseline="central">a Skill-Rejected commit</text></g>
+</svg>

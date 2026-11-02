@@ -60,7 +60,14 @@ List what a repository offers, then import one by its GitHub link. Both run git,
 cd ~/src/heedle-ai/loom
 go run ./cmd/loom skills -catalog https://github.com/anthropics/skills
 go run ./cmd/loom skills -store ~/skills-demo.git -import https://github.com/anthropics/skills/tree/main/skills/pdf
+```
+
+The catalog lists each folder with its skill's name and description. The import isn't a skill yet: its repository isn't trusted, so it waits for review (`pdf at 8b61e7d0b4ba… waits for review` when this was written; the version changes as the repository does). Read it, then approve exactly the version you read, with the command `-review` prints at its end (this was the version when it was written; use the one yours prints):
+
+```bash
+go run ./cmd/loom skills -store ~/skills-demo.git -review pdf
+go run ./cmd/loom skills -store ~/skills-demo.git -approve pdf@8b61e7d0b4ba45033cdaf7948d77d7208853e427
 git --git-dir ~/skills-demo.git log -1 --format=%B refs/treadle/skills/pdf
 ```
 
-The catalog lists each folder with its skill's name and description. The import prints the version (`added pdf at 8b61e7d0b4ba…` when this was written; it changes as the repository does), and the log shows where it came from, down to the commit. To keep a `SKILL.md` you have as text, paste it: `go run ./cmd/loom skills -store ~/skills-demo.git -add - < SKILL.md`.
+The log shows where it came from, down to the commit, and the pending commit it was approved from. To skip review for repositories you trust, `-trust https://github.com/anthropics`. To keep a `SKILL.md` you have as text, paste it: `go run ./cmd/loom skills -store ~/skills-demo.git -add - < SKILL.md`.

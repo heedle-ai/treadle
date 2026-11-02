@@ -50,6 +50,7 @@ func TestInv_ImportsKeepTheirSource(t *testing.T) {
 		"skills/docx/SKILL.md": md("docx", "Reads Word files."), "README.md": "hi",
 	}, nil)
 	l := newLibrary(t)
+	must(0, l.Trust(ctx, repo, time.Unix(1700000000, 0)))
 	s, err := l.Import(ctx, treadle.Source{Repo: repo, Ref: "v1", Path: "skills/pdf"}, time.Unix(1700000000, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +99,9 @@ func TestInv_ImportsAreChecked(t *testing.T) {
 	}
 	if list, _, _ := l.Skills(ctx); len(list) != 0 {
 		t.Errorf("kept %+v", list)
+	}
+	if list, _, _ := l.Pending(ctx); len(list) != 0 {
+		t.Errorf("kept pending %+v", list)
 	}
 	if _, err := l.Import(ctx, treadle.Source{Repo: repo, Ref: "nope", Path: "ok"}, time.Now()); err == nil {
 		t.Error("imported from a ref that doesn't exist")
