@@ -22,10 +22,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/heedle-ai/draft"
 	"github.com/heedle-ai/pirn"
 	"github.com/heedle-ai/warp"
 )
@@ -36,8 +38,10 @@ const RefPrefix = "refs/treadle/skills/"
 // SkillFile is the file every skill has.
 const SkillFile = pirn.SkillFile
 
-// ErrInvalid wraps every refusal of a skill or a version.
-var ErrInvalid = errors.New("treadle: invalid")
+// ErrInvalid wraps every refusal of a skill or a version. It wraps
+// warp.ErrInvalid in turn, so loom's check treats it as permanent rather
+// than retrying.
+var ErrInvalid = fmt.Errorf("treadle: %w", warp.ErrInvalid)
 
 // Skill is one version of a skill.
 type Skill struct {
@@ -53,7 +57,10 @@ var skillName = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // "---" lines. name must be lower-case letters, digits and single hyphens,
 // at most 64 characters, and not contain "anthropic" or "claude";
 // description must be non-empty, at most 1024 characters, without "<" or
-// ">". These are the rules of Anthropic's Agent Skills.
+// ">". These are the rules of Anthropic's Agent Skills. Both must be YAML
+// strings, the front matter ends at a line that is exactly "---", and
+// treadle also refuses names draft reserves (draft.Reserved) and control
+// characters in descriptions.
 func Meta(skillMD []byte) (name, description string, err error) {
 	bad := func(format string, a ...any) (string, string, error) {
 		return "", "", fmt.Errorf("%w: %s: "+format, append([]any{ErrInvalid, SkillFile}, a...)...)
@@ -62,28 +69,56 @@ func Meta(skillMD []byte) (name, description string, err error) {
 	if !utf8.ValidString(text) {
 		return bad("not UTF-8")
 	}
-	rest, ok := strings.CutPrefix(text, "---\n")
-	if !ok {
+	lines := strings.Split(text, "\n")
+	if lines[0] != "---" {
 		return bad("must start with a --- line and YAML front matter")
 	}
-	front, _, ok := strings.Cut(rest, "\n---")
-	if !ok {
+	end := -1
+	for i := 1; i < len(lines) && end < 0; i++ {
+		if strings.TrimRight(lines[i], " \t") == "---" {
+			end = i
+		}
+	}
+	if end < 0 {
 		return bad("its front matter has no closing --- line")
 	}
-	var m struct {
-		Name        string `yaml:"name"`
-		Description string `yaml:"description"`
-	}
-	if err := yaml.Unmarshal([]byte(front), &m); err != nil {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:end], "\n")), &doc); err != nil {
 		return bad("front matter: %v", err)
+	}
+	// name and description must be YAML strings: not numbers, booleans,
+	// binary or anything else YAML would turn into one.
+	var m struct{ Name, Description string }
+	if len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return bad("front matter must be a YAML mapping")
+	}
+	fields := doc.Content[0].Content
+	for i := 0; i+1 < len(fields); i += 2 {
+		k, v := fields[i], fields[i+1]
+		var dst *string
+		switch k.Value {
+		case "name":
+			dst = &m.Name
+		case "description":
+			dst = &m.Description
+		default:
+			continue
+		}
+		if v.Kind != yaml.ScalarNode || v.Tag != "!!str" {
+			return bad("%s must be a string", k.Value)
+		}
+		*dst = v.Value
 	}
 	switch {
 	case len(m.Name) > 64 || !skillName.MatchString(m.Name):
 		return bad("name %q must be lower-case letters, digits and single hyphens, at most 64 characters", m.Name)
 	case strings.Contains(m.Name, "anthropic") || strings.Contains(m.Name, "claude"):
 		return bad("name %q may not contain \"anthropic\" or \"claude\"", m.Name)
-	case strings.TrimSpace(m.Description) == "" || utf8.RuneCountInString(m.Description) > 1024 || strings.ContainsAny(m.Description, "<>"):
-		return bad("description must be 1 to 1024 characters, without < or >")
+	case draft.Reserved(m.Name):
+		return bad("name %q is reserved by the language (a program could never call it)", m.Name)
+	case strings.TrimSpace(m.Description) == "" || utf8.RuneCountInString(m.Description) > 1024 || strings.ContainsAny(m.Description, "<>") ||
+		strings.ContainsFunc(m.Description, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }):
+		return bad("description must be 1 to 1024 characters, without < or > or control characters")
 	}
 	return m.Name, strings.TrimSpace(m.Description), nil
 }
@@ -116,56 +151,105 @@ func (l *Library) Add(ctx context.Context, files map[string][]byte, at time.Time
 		return Skill{}, err
 	}
 	ref := RefPrefix + name
-	head, exists, err := l.Store.Resolve(ctx, ref)
-	if err != nil {
-		return Skill{}, err
-	}
-	var parents []warp.ID
-	if exists {
-		t, _, err := l.Store.Parents(ctx, head)
+	// Another writer may move the ref between our read and our swap: read
+	// it again and retry, so concurrent adds of a folder all agree.
+	for try := 0; ; try++ {
+		head, exists, err := l.Store.Resolve(ctx, ref)
 		if err != nil {
 			return Skill{}, err
 		}
-		if t == tree {
-			return Skill{Name: name, Description: desc, Version: tree, Commit: head}, nil
+		var parents []warp.ID
+		if exists {
+			t, _, err := l.Store.Parents(ctx, head)
+			if err != nil {
+				return Skill{}, err
+			}
+			if t == tree {
+				return Skill{Name: name, Description: desc, Version: tree, Commit: head}, nil
+			}
+			parents = []warp.ID{head}
 		}
-		parents = []warp.ID{head}
+		commit, err := l.Store.Commit(ctx, warp.CommitSpec{Tree: tree, Parents: parents, Message: "skill " + name,
+			Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
+		if err != nil {
+			return Skill{}, err
+		}
+		err = l.Store.Advance(ctx, ref, head, commit)
+		if errors.Is(err, warp.ErrConflict) && try < 10 {
+			continue
+		}
+		if err != nil {
+			return Skill{}, err
+		}
+		return Skill{Name: name, Description: desc, Version: tree, Commit: commit}, nil
 	}
-	commit, err := l.Store.Commit(ctx, warp.CommitSpec{Tree: tree, Parents: parents, Message: "skill " + name,
-		Author: warp.Signature{Name: "treadle", Email: "treadle@heedle.ai", When: at}})
-	if err != nil {
-		return Skill{}, err
-	}
-	if err := l.Store.Advance(ctx, ref, head, commit); err != nil {
-		return Skill{}, err
-	}
-	return Skill{Name: name, Description: desc, Version: tree, Commit: commit}, nil
 }
 
-// Skills lists the newest version of every skill, by name.
-func (l *Library) Skills(ctx context.Context) ([]Skill, error) {
+// Skills lists the newest version of every skill, by name. A ref whose
+// newest version isn't a valid skill of its name is left out and listed
+// in bad, so one broken skill never hides the others.
+func (l *Library) Skills(ctx context.Context) (skills []Skill, bad []error, err error) {
 	refs, err := l.Store.Refs(ctx, RefPrefix)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var out []Skill
 	for _, r := range refs {
 		tree, _, err := l.Store.Parents(ctx, r.Commit)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		s, err := l.describe(ctx, tree)
-		if err != nil {
-			return nil, err
-		}
-		if RefPrefix+s.Name != r.Name {
-			return nil, fmt.Errorf("%w: %s holds the skill %q", ErrInvalid, r.Name, s.Name)
+		switch {
+		case errors.Is(err, ErrInvalid):
+			bad = append(bad, fmt.Errorf("%s: %w", r.Name, err))
+			continue
+		case err != nil:
+			return nil, nil, err
+		case RefPrefix+s.Name != r.Name:
+			bad = append(bad, fmt.Errorf("%w: %s holds the skill %q", ErrInvalid, r.Name, s.Name))
+			continue
 		}
 		s.Commit = r.Commit
-		out = append(out, s)
+		skills = append(skills, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
-	return out, nil
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	return skills, bad, nil
+}
+
+// version checks that version was added as a version of the skill name
+// (it is the tree of a commit on that skill's ref) and returns its
+// folder, checked. Any other tree in the store, even one holding a
+// SKILL.md of that name, is refused.
+func (l *Library) version(ctx context.Context, name string, version warp.ID) (map[string][]byte, error) {
+	if !skillName.MatchString(name) {
+		return nil, fmt.Errorf("%w: skill name %q", ErrInvalid, name)
+	}
+	head, ok, err := l.Store.Resolve(ctx, RefPrefix+name)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("%w: this worker has no skill %q", ErrInvalid, name)
+	}
+	log, err := l.Store.Log(ctx, head, 0)
+	if err != nil {
+		return nil, err
+	}
+	added := false
+	for _, c := range log {
+		added = added || c.Tree == version
+	}
+	if !added {
+		return nil, fmt.Errorf("%w: %s was never added as a version of the skill %q", ErrInvalid, version, name)
+	}
+	files, err := l.Files(ctx, version)
+	if err != nil {
+		return nil, err
+	}
+	if got, _, _ := Meta(files[SkillFile]); got != name {
+		return nil, fmt.Errorf("%w: version %s is the skill %q, not %q", ErrInvalid, version, got, name)
+	}
+	return files, nil
 }
 
 // Versions lists every version of a skill, newest first.

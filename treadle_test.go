@@ -64,6 +64,13 @@ func TestInv_SkillsAreChecked(t *testing.T) {
 		"---\nname: my-anthropic\ndescription: d\n---\n", "---\nname: w\n---\n", "---\nname: w\ndescription: \"  \"\n---\n",
 		"---\nname: w\ndescription: " + strings.Repeat("d", 1025) + "\n---\n", "---\nname: w\ndescription: use <b>\n---\n",
 		"---\nname: w\ndescription: d\n---\n\xff",
+		// Review 13: a line starting --- closed the front matter; numbers
+		// and binary passed as names; control characters reached terminals;
+		// names the language reserves could be added but never called.
+		"---\nname: w\n---extra\ndescription: d\n---\n", "---\nname: 123\ndescription: d\n---\n",
+		"---\nname: !!binary d2VhdGhlcg==\ndescription: d\n---\n", "---\nname: w\ndescription: true\n---\n",
+		"---\nname: w\ndescription: \"bad\\u001b[31m\"\n---\n", "---\nname: par\ndescription: d\n---\n",
+		"---\nname: when\ndescription: d\n---\n", "---\n- name\n---\n",
 	} {
 		if _, _, err := treadle.Meta([]byte(bad)); !errors.Is(err, treadle.ErrInvalid) {
 			t.Errorf("accepted %q", bad)
@@ -97,7 +104,10 @@ func TestInv_LibraryKeepsEveryVersion(t *testing.T) {
 	if _, parents := must2(l.Store.Parents(ctx, v2.Commit)); len(parents) != 1 || parents[0] != v1.Commit {
 		t.Errorf("v2's parents %v, want v1", parents)
 	}
-	list := must(l.Skills(ctx))
+	list, bad, err := l.Skills(ctx)
+	if err != nil || len(bad) != 0 {
+		t.Fatal(err, bad)
+	}
 	if len(list) != 2 || list[0].Name != "brief" || list[1].Version != v2.Version || list[1].Description != "Says the weather for a city." {
 		t.Errorf("skills %+v", list)
 	}
@@ -128,19 +138,38 @@ func must2[A, B any](a A, b B, err error) (A, B) {
 	return a, b
 }
 
-// TestInv_PinsAreChecked: a skill can't take a command's name; a plan's
-// pins must be versions the library has, of the skill they're named as,
-// one version per skill.
+func node(id, name string, v warp.ID) plan.Node {
+	return plan.Node{ID: plan.NodeID(id), Activity: treadle.ActivityName, Args: []string{name, string(v)}}
+}
+
+// TestInv_PinsAreChecked: a skill named like a command is left out, not
+// fatal; a plan's pins must be versions added to the skill they're named
+// as (never just any tree with that SKILL.md), one version per skill.
 func TestInv_PinsAreChecked(t *testing.T) {
 	l := newLibrary(t)
 	at := time.Unix(1700000000, 0)
 	echo := must(l.Add(ctx, skill("echo", "x"), at))
-	if err := l.AddTo(ctx, draft.DefaultRegistry()); !errors.Is(err, treadle.ErrInvalid) {
-		t.Errorf("a skill named echo: %v", err)
-	}
 	w := must(l.Add(ctx, skill("weather", "x"), at))
-	node := func(id, name string, v warp.ID) plan.Node {
-		return plan.Node{ID: plan.NodeID(id), Activity: treadle.ActivityName, Args: []string{name, string(v)}}
+	// Review 13: a skill named like a command stopped every worker; now
+	// it's left out, and the others are still registered.
+	reg := draft.DefaultRegistry()
+	if skipped, err := l.AddTo(ctx, reg); err != nil || len(skipped) != 1 || !strings.Contains(skipped[0].Error(), `"echo"`) {
+		t.Errorf("a skill named echo: %v %v", skipped, err)
+	}
+	if _, ok := reg.Lookup("weather"); !ok {
+		t.Error("weather wasn't registered beside the bad skill")
+	}
+	// Review 13: a tree that was never added, even one whose SKILL.md is
+	// named weather (an agent can write one into its /work/out, which loom
+	// records in the same store), can't be pinned, recorded or run.
+	forged := must(l.Store.PutTree(ctx, []warp.Entry{{Name: "SKILL.md", Kind: warp.KindBlob,
+		ID: must(l.Store.PutBlob(ctx, skill("weather", "forged")["SKILL.md"]))}}))
+	fp := plan.Plan{Nodes: []plan.Node{node("n0", "weather", forged)}}
+	if _, err := l.Pinned(ctx, draft.DefaultRegistry(), fp); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a forged version was pinned: %v", err)
+	}
+	if _, err := l.Uses(ctx, fp); !errors.Is(err, treadle.ErrInvalid) {
+		t.Errorf("a forged version was recorded: %v", err)
 	}
 	for _, p := range []plan.Plan{
 		{Nodes: []plan.Node{node("n0", "weather", warp.ID(strings.Repeat("ab", 20)))}},
@@ -207,7 +236,7 @@ func TestLaw_SkillRunsArePinned(t *testing.T) {
 	at := time.Unix(1700000000, 0)
 	v1 := must(l.Add(ctx, skill("weather", "Say RAIN-V1."), at))
 	reg := draft.DefaultRegistry()
-	if err := l.AddTo(ctx, reg); err != nil {
+	if _, err := l.AddTo(ctx, reg); err != nil {
 		t.Fatal(err)
 	}
 	src := `(pipe (echo "Boston") (weather "today"))`
@@ -223,7 +252,7 @@ func TestLaw_SkillRunsArePinned(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	worker := draft.DefaultRegistry()
-	if err := treadle.Register(ctx, worker, env, agent, l); err != nil {
+	if _, err := treadle.Register(ctx, worker, env, agent, l); err != nil {
 		t.Fatal(err)
 	}
 	loom.RegisterWith(env, &loom.Checker{Registry: worker, RegistryFor: func(ctx context.Context, p plan.Plan) (*registry.Registry, error) {
@@ -265,7 +294,8 @@ func TestInv_UnknownVersionsFailAsSetup(t *testing.T) {
 	brief := must(l.Add(ctx, skill("brief", "x"), time.Unix(1700000000, 0)))
 	podman, log := fakePodman(t)
 	cmd := treadle.Command(pirn.Agent{Claude: pirn.Claude{APIKey: "k"}, Runner: bobbin.Runner{Podman: podman}, Image: strings.Repeat("0", 64)}, l)
-	for _, args := range [][]string{{"weather", strings.Repeat("ab", 20)}, {"weather", string(brief.Version)}, {"weather", "HEAD"}} {
+	forged := must(l.Store.PutTree(ctx, []warp.Entry{{Name: "SKILL.md", Kind: warp.KindBlob, ID: must(l.Store.PutBlob(ctx, skill("brief", "forged")["SKILL.md"]))}}))
+	for _, args := range [][]string{{"weather", strings.Repeat("ab", 20)}, {"weather", string(brief.Version)}, {"weather", "HEAD"}, {"brief", string(forged)}} {
 		_, err := cmd(ctx, plan.Input{Args: args})
 		var app *temporal.ApplicationError
 		if !errors.As(err, &app) || app.Type() != "SkillSetup" || !app.NonRetryable() {
@@ -280,5 +310,49 @@ func TestInv_UnknownVersionsFailAsSetup(t *testing.T) {
 	}
 	if got := treadle.Instruction("weather", nil); got != `Use the skill "weather" on your inputs.` {
 		t.Error(got)
+	}
+}
+
+// TestInv_BrokenSkillsAreSkipped: a skill ref whose newest version isn't a
+// valid skill of its name is listed as bad, and the others are still
+// listed. (Review 13: one such ref made every listing, and so every
+// worker and drawdown, fail.)
+func TestInv_BrokenSkillsAreSkipped(t *testing.T) {
+	l := newLibrary(t)
+	at := time.Unix(1700000000, 0)
+	w := must(l.Add(ctx, skill("weather", "x"), at))
+	must(l.Add(ctx, skill("brief", "x"), at))
+	if err := l.Store.Advance(ctx, treadle.RefPrefix+"zzz", "", w.Commit); err != nil {
+		t.Fatal(err)
+	}
+	skills, bad, err := l.Skills(ctx)
+	if err != nil || len(skills) != 2 || len(bad) != 1 || !strings.Contains(bad[0].Error(), "zzz") {
+		t.Errorf("skills %+v, bad %v, err %v", skills, bad, err)
+	}
+}
+
+// TestInv_ConcurrentAddsAgree: adding the same folder from many writers
+// at once gives every one the same version, and one commit. (Review 13:
+// seven of eight failed with a conflict.)
+func TestInv_ConcurrentAddsAgree(t *testing.T) {
+	l := newLibrary(t)
+	var wg sync.WaitGroup
+	got := make([]treadle.Skill, 8)
+	errs := make([]error, 8)
+	for i := range got {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got[i], errs[i] = l.Add(ctx, skill("weather", "same"), time.Unix(1700000000, 0))
+		}(i)
+	}
+	wg.Wait()
+	for i := range got {
+		if errs[i] != nil || got[i].Version != got[0].Version {
+			t.Errorf("writer %d: %+v %v", i, got[i], errs[i])
+		}
+	}
+	if vs := must(l.Versions(ctx, "weather")); len(vs) != 1 {
+		t.Errorf("%d versions", len(vs))
 	}
 }
