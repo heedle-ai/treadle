@@ -58,7 +58,10 @@ func TestInv_CreatedSkillsWaitForReview(t *testing.T) {
 		return pirn.AgentResult{Files: []pirn.File{md}, Skipped: []string{"scripts/huge.sh: too big"}}, nil
 	}
 	ran := false
-	never := func(context.Context, pirn.Question) (pirn.AgentResult, error) { ran = true; return pirn.AgentResult{}, nil }
+	never := func(context.Context, pirn.Question) (pirn.AgentResult, error) {
+		ran = true
+		return pirn.AgentResult{}, nil
+	}
 	if _, _, err := treadle.Create(ctx, never, "sum\u0007it"); !errors.Is(err, treadle.ErrInvalid) || ran {
 		t.Errorf("a bad description reached the agent: %v", err)
 	}
