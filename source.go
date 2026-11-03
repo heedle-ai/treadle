@@ -15,6 +15,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heedle-ai/pirn"
 	"github.com/heedle-ai/warp"
@@ -219,6 +220,21 @@ type CatalogEntry struct {
 	Problem     string `json:"problem,omitempty"` // why it can't be imported as it is
 }
 
+// MaxProblem bounds a catalog entry's Problem: a refusal can quote the
+// SKILL.md, which may be up to MaxSkillMD (review 24).
+const MaxProblem = 300
+
+// clip is s cut to at most n bytes, on a character boundary, marked "…".
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
 // MaxSkillMD is the largest SKILL.md a skill may have (Meta refuses a
 // bigger one), so a review, a catalog and the Skills page always show it
 // whole.
@@ -288,7 +304,7 @@ func Catalog(ctx context.Context, repo, ref string) ([]CatalogEntry, error) {
 			return err
 		}
 		if e.Name, e.Description, err = Meta(b); err != nil {
-			e.Problem = err.Error()
+			e.Problem = clip(err.Error(), MaxProblem)
 		} else if e.Source.Path != "" && path.Base(e.Source.Path) != e.Name {
 			e.Problem = fmt.Sprintf("its folder is %q but its name is %q", path.Base(e.Source.Path), e.Name)
 		}
