@@ -181,9 +181,22 @@ func TestInv_TripPlannerAsksOnlyForSearchAndMaps(t *testing.T) {
 		"no sources":     {strings.Replace(good, "- https://www.visitlisboa.com/", "- the internet", 1), "2026-12-12", "2026-12-13"},
 		"backwards trip": {good, "2026-12-13", "2026-12-12"},
 		"not a date":     {good, "next week", "2026-12-13"},
+		// review 31
+		"an extra day":       {good, "2026-12-12", "2026-12-12"},
+		"an hour past 23":    {strings.Replace(good, "- 10:00 Mosteiro", "- 29:00 Mosteiro", 1), "2026-12-12", "2026-12-13"},
+		"no last day":        {good, "2026-12-12", ""},
+		"an hour, not a day": {good, "2026-12-12", "12"},
+		"no dashes":          {good, "2026-12-12", "20261213"},
+		"not a real day":     {strings.Replace(good, "2026-12-12", "2026-02-30", -1), "2026-02-30", "2026-12-13"},
 	} {
 		if err := check(c[0], c[1], c[2]); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// review 31: it only reads, and says nothing of a queue that a
+	// connector without writes wouldn't have.
+	skill := string(files[treadle.SkillFile])
+	if !strings.Contains(skill, "Never call a tool that books, buys, saves, shares, sends or changes anything") || strings.Contains(skill, "queues") {
+		t.Error("the trip planner must only look things up")
 	}
 }
