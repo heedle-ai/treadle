@@ -22,7 +22,7 @@ import (
 // TestInv_FirstSkillsAreValid: the skills shipped in skills/ are skills
 // treadle keeps (Check), with the names their folders have.
 func TestInv_FirstSkillsAreValid(t *testing.T) {
-	for _, name := range []string{"find-evidence", "assess-claim"} {
+	for _, name := range []string{"find-evidence", "assess-claim", "trip-planner"} {
 		files, err := treadle.ReadFolder(filepath.Join("skills", name))
 		if err != nil {
 			t.Fatal(err)
@@ -135,5 +135,55 @@ func TestInv_SkillsDeclareTheirConnectors(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(log); len(b) != 0 {
 		t.Errorf("a container started: %s", b)
+	}
+}
+
+// TestInv_TripPlannerAsksOnlyForSearchAndMaps: the trip planner is a skill
+// and nothing more, needing exactly the connectors search and maps, which
+// its review shows; its check accepts an itinerary with a day section per
+// day in order, each with a stop, and sources, and rejects every other
+// shape. (Roadmap 7.4.)
+func TestInv_TripPlannerAsksOnlyForSearchAndMaps(t *testing.T) {
+	files, err := treadle.ReadFolder(filepath.Join("skills", "trip-planner"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := treadle.Connectors(files[treadle.SkillFile])
+	if err != nil || g.String() != "maps search" {
+		t.Errorf("connectors %q %v", g, err)
+	}
+	good := `# Lisbon, 2026-12-12 to 2026-12-13
+
+## Day 1, 2026-12-12: Alfama
+- 09:30 Miradouro de Santa Luzia, Largo Santa Luzia: the view first. (walk 6 min)
+- 10:15 Museu Nacional do Azulejo, Rua da Madre de Deus 4: tiles; open 10:00-18:00.
+
+## Day 2, 2026-12-13: Belém
+- 10:00 Mosteiro dos Jerónimos, Praça do Império: the monastery.
+
+## Sources
+- https://www.visitlisboa.com/
+`
+	check := func(text, first, last string) error {
+		f := filepath.Join(t.TempDir(), "itinerary.md")
+		os.WriteFile(f, []byte(text), 0o644)
+		return exec.Command("sh", "skills/trip-planner/scripts/check.sh", f, first, last).Run()
+	}
+	if err := check(good, "2026-12-12", "2026-12-13"); err != nil {
+		t.Errorf("a good itinerary: %v", err)
+	}
+	for name, c := range map[string][3]string{
+		"a day missing":  {good, "2026-12-12", "2026-12-14"},
+		"wrong date":     {strings.Replace(good, "Day 2, 2026-12-13", "Day 2, 2026-12-15", 1), "2026-12-12", "2026-12-13"},
+		"out of order":   {strings.Replace(strings.Replace(good, "## Day 1,", "## Day X,", 1), "## Day 2,", "## Day 1,", 1), "2026-12-12", "2026-12-12"},
+		"no stop":        {strings.Replace(good, "- 10:00 Mosteiro dos Jerónimos, Praça do Império: the monastery.", "Walk around.", 1), "2026-12-12", "2026-12-13"},
+		"no time":        {strings.Replace(good, "- 10:00 Mosteiro", "- Mosteiro", 1), "2026-12-12", "2026-12-13"},
+		"no sources":     {strings.Replace(good, "- https://www.visitlisboa.com/", "- the internet", 1), "2026-12-12", "2026-12-13"},
+		"backwards trip": {good, "2026-12-13", "2026-12-12"},
+		"not a date":     {good, "next week", "2026-12-13"},
+	} {
+		if err := check(c[0], c[1], c[2]); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
