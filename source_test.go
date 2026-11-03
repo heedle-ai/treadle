@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heedle-ai/treadle"
 )
@@ -261,5 +262,21 @@ func TestInv_SourcePathsAreSafe(t *testing.T) {
 	}
 	if _, err := treadle.Catalog(ctx, "https://user:SECRET@github.com/a/b", ""); err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Errorf("a URL's credentials: %v", err)
+	}
+}
+
+// TestInv_CatalogProblemsAreBounded: a skill treadle refuses is listed with
+// its problem cut to MaxProblem bytes, on a character boundary, however
+// much of its SKILL.md the refusal would quote (review 24: a 1 MB name
+// made a listing too big for Temporal).
+func TestInv_CatalogProblemsAreBounded(t *testing.T) {
+	huge := "---\nname: " + strings.Repeat("é", 400_000) + "\ndescription: x\n---\n"
+	repo := skillRepo(t, map[string]string{"skills/big/SKILL.md": huge}, nil)
+	cat, err := treadle.Catalog(ctx, repo, "")
+	if err != nil || len(cat) != 1 {
+		t.Fatalf("%d entries, %v", len(cat), err)
+	}
+	if p := cat[0].Problem; p == "" || len(p) > treadle.MaxProblem+len("…") || !utf8.ValidString(p) {
+		t.Errorf("problem of %d bytes, valid UTF-8 %v", len(p), utf8.ValidString(p))
 	}
 }
