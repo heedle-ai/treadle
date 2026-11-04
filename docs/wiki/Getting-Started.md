@@ -1,9 +1,8 @@
 ## 1. Install and clone
 
-You need Go 1.24 or newer and Git. treadle, bobbin, reed and pirn are private, so clone with your GitHub login:
+You need Go 1.24 or newer and Git. Clone it beside the other heedle-ai repos, all public:
 
 ```bash
-gh auth login && gh auth setup-git
 mkdir -p ~/src/heedle-ai && cd ~/src/heedle-ai
 for r in weft draft shuttle warp bobbin reed pirn treadle loom; do git clone https://github.com/heedle-ai/$r.git; done
 cd treadle && go test ./...
