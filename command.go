@@ -115,25 +115,44 @@ func Command(a pirn.Agent, l *Library) weft.Arrow[plan.Input, string] {
 			return "", temporal.NewNonRetryableApplicationError("a skill step needs its name and version", "InvalidInput", nil)
 		}
 		name, version, args := in.Args[0], warp.ID(in.Args[1]), in.Args[2:]
-		files, reviewed, err := l.reviewedVersion(ctx, name, version)
+		files, grant, err := l.stepFiles(ctx, name, version)
 		if err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}
 			if errors.Is(err, ErrInvalid) || errors.Is(err, warp.ErrInvalid) || errors.Is(err, warp.ErrNotFound) {
-				return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf("skill %s at %s: %v", name, version, err), "SkillSetup", nil)
+				return "", temporal.NewNonRetryableApplicationError(err.Error(), "SkillSetup", nil)
 			}
 			return "", err
 		}
-		grant, err := Connectors(files[SkillFile])
-		if err != nil {
-			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf("skill %s at %s: %v", name, version, err), "SkillSetup", nil)
-		}
-		if len(grant) > 0 && !reviewed {
-			return "", temporal.NewNonRetryableApplicationError(fmt.Sprintf("skill %s at %s asks for connectors (%s) but nobody reviewed it: import it again, and approve it", name, version, grant), "SkillSetup", nil)
-		}
 		return pirn.Step(ctx, a, pirn.Question{Instruction: Instruction(name, args), Sources: pirn.Sources(in.Upstream), Skill: files, Grant: grant})
 	}
+}
+
+// StepGrant is what a step of the skill name at version would be granted,
+// or why it can't run (ErrInvalid): the same checks the step makes
+// (stepFiles), so a ready check never calls ready what the step refuses.
+func (l *Library) StepGrant(ctx context.Context, name string, version warp.ID) (pirn.Grant, error) {
+	_, g, err := l.stepFiles(ctx, name, version)
+	return g, err
+}
+
+// stepFiles is the skill's files at version and the connectors its
+// steps get: a version added as that skill (reviewedVersion), whose
+// connectors, if any, a person reviewed.
+func (l *Library) stepFiles(ctx context.Context, name string, version warp.ID) (map[string][]byte, pirn.Grant, error) {
+	files, reviewed, err := l.reviewedVersion(ctx, name, version)
+	if err != nil {
+		return nil, nil, fmt.Errorf("skill %s at %s: %w", name, version, err)
+	}
+	grant, err := Connectors(files[SkillFile])
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: skill %s at %s: %v", ErrInvalid, name, version, err)
+	}
+	if len(grant) > 0 && !reviewed {
+		return nil, nil, fmt.Errorf("%w: skill %s at %s asks for connectors (%s) but nobody reviewed it: import it again, and approve it", ErrInvalid, name, version, grant)
+	}
+	return files, grant, nil
 }
 
 // Instruction is what a skill step asks of Claude.

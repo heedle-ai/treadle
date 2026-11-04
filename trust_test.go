@@ -334,4 +334,14 @@ func TestInv_ConnectorsNeedAReview(t *testing.T) {
 	if b, _ := os.ReadFile(log); len(b) != 0 {
 		t.Errorf("a container started: %s", b)
 	}
+	// StepGrant decides as the step does, so a ready check never calls
+	// ready what the step refuses (review 33).
+	if g, err := l.StepGrant(ctx, "triage", v.Version); err != nil || g.String() != "linear/search_issues mail" {
+		t.Errorf("StepGrant of the approved version: %q %v", g, err)
+	}
+	for _, bad := range [][2]string{{"notify", string(tree)}, {"triage", string(tree)}, {"triage", strings.Repeat("0", 40)}, {"nope", string(v.Version)}} {
+		if _, err := l.StepGrant(ctx, bad[0], warp.ID(bad[1])); !errors.Is(err, treadle.ErrInvalid) {
+			t.Errorf("StepGrant(%s, %s): %v", bad[0], bad[1], err)
+		}
+	}
 }
