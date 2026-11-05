@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/heedle-ai/warp"
 )
@@ -61,7 +62,11 @@ var secrets = []struct {
 	{"an Anthropic API key", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{8,}`)},
 	{"a GitHub token", regexp.MustCompile(`\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`)},
 	{"an AWS access key", regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`)},
-	{"an AWS secret key", regexp.MustCompile(`(?i)aws_?secret_?access_?key\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}`)},
+	{"an AWS secret key", regexp.MustCompile(`(?i)(aws_?secret_?access_?key|secret_?access_?key)["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}`)},
+	{"a GitLab token", regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}`)},
+	{"a Hugging Face token", regexp.MustCompile(`\bhf_[A-Za-z0-9]{30,}`)},
+	{"an npm token", regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}`)},
+	{"a Slack webhook", regexp.MustCompile(`hooks\.slack\.com/services/T[A-Za-z0-9_/-]{8,}`)},
 	{"a private key", regexp.MustCompile(`-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY( BLOCK)?-----`)},
 	{"a Slack token", regexp.MustCompile(`\bxox[abposr]-[A-Za-z0-9-]{10,}`)},
 	{"a Stripe secret key", regexp.MustCompile(`\b[rs]k_live_[A-Za-z0-9]{16,}`)},
@@ -70,7 +75,9 @@ var secrets = []struct {
 }
 
 // SecretIn reports where files look like they hold a secret: the first
-// file (by path) and line a key check matches, and what it looks like.
+// file (by path) and line a key check matches, and what it looks like;
+// line 0 is the file's path itself. It reads text as it is: it doesn't
+// open archives or decode other encodings.
 func SecretIn(files map[string][]byte) (file string, line int, what string, found bool) {
 	paths := make([]string, 0, len(files))
 	for p := range files {
@@ -78,6 +85,11 @@ func SecretIn(files map[string][]byte) (file string, line int, what string, foun
 	}
 	sort.Strings(paths)
 	for _, p := range paths {
+		for _, s := range secrets {
+			if s.re.MatchString(p) {
+				return p, 0, s.what, true
+			}
+		}
 		for i, l := range bytes.Split(files[p], []byte("\n")) {
 			for _, s := range secrets {
 				if s.re.Match(l) {
@@ -133,10 +145,18 @@ func (l *Library) Publish(ctx context.Context, name, dir string) (Published, err
 		return Published{}, err
 	}
 	if f, n, what, ok := SecretIn(files); ok {
+		if n == 0 {
+			// The key is in the name: don't print it (review 49).
+			// Not even its folder: the key may be a folder's name.
+			return Published{}, fmt.Errorf("%w: a file or folder name in the skill looks like %s; rename it in the skill, then add it again", ErrSecret, what)
+		}
 		return Published{}, fmt.Errorf("%w: %s line %d looks like %s; take it out of the skill, then add it again", ErrSecret, f, n, what)
 	}
 	for p := range files {
-		if !skillPath(p) || hidden(p) {
+		if hidden(p) {
+			return Published{}, fmt.Errorf("%w: %s is a hidden file", ErrInvalid, p)
+		}
+		if !skillPath(p) {
 			return Published{}, fmt.Errorf("%w: %s would leave the skill's folder", ErrInvalid, p)
 		}
 	}
@@ -176,10 +196,61 @@ func (l *Library) Publish(ctx context.Context, name, dir string) (Published, err
 		return Published{}, err
 	}
 
-	// The README's new text, before anything is written.
-	old, err := os.ReadFile(filepath.Join(skillsDir, readme))
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	// Nothing of yours is there that publishing would replace or commit
+	// unseen: uncommitted, untracked or ignored files in the skill's
+	// folder or the README (review 49: a draft README, with whatever was
+	// in it, was committed, and files of yours in the folder deleted).
+	rel := []string{"--", path.Join(PublishDir, name), path.Join(PublishDir, readme)}
+	if st, err := publishGit(ctx, abs, append([]string{"status", "--porcelain", "--ignored", "--untracked-files=all"}, rel...)...); err != nil {
 		return Published{}, err
+	} else if st = strings.TrimSpace(st); st != "" {
+		return Published{}, fmt.Errorf("%w: %s has changes of yours in %s/%s or %s/%s; commit or remove them first:\n%s", ErrInvalid, dir, PublishDir, name, PublishDir, readme, st)
+	}
+	// And git can commit: an identity, a branch, no merge or rebase going
+	// on, so nothing is written that can't then be committed (review 49).
+	if _, err := publishGit(ctx, abs, "var", "GIT_COMMITTER_IDENT"); err != nil {
+		return Published{}, fmt.Errorf("%w: git has no identity to commit with in %s (git config user.name and user.email): %v", ErrInvalid, dir, err)
+	}
+	if _, err := publishGit(ctx, abs, "symbolic-ref", "-q", "HEAD"); err != nil {
+		return Published{}, fmt.Errorf("%w: %s isn't on a branch", ErrInvalid, dir)
+	}
+	for _, p := range []string{"MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"} {
+		gp, err := publishGit(ctx, abs, "rev-parse", "--git-path", p)
+		if err != nil {
+			return Published{}, err
+		}
+		gp = strings.TrimSpace(gp)
+		if !filepath.IsAbs(gp) {
+			gp = filepath.Join(abs, gp)
+		}
+		if _, err := os.Lstat(gp); err == nil {
+			return Published{}, fmt.Errorf("%w: %s is in the middle of a merge, rebase or cherry-pick (%s); finish it first", ErrInvalid, dir, p)
+		}
+	}
+
+	// The README's new text, before anything is written.
+	// From HEAD's README, not the work tree's: a file marked
+	// assume-unchanged or skip-worktree looks clean but isn't (review
+	// 49), so those marks refuse too.
+	if flags, err := publishGit(ctx, abs, append([]string{"ls-files", "-v"}, rel...)...); err != nil {
+		return Published{}, err
+	} else {
+		for _, l := range strings.Split(strings.TrimSpace(flags), "\n") {
+			if l != "" && (l[0] == 'S' || (l[0] >= 'a' && l[0] <= 'z')) {
+				return Published{}, fmt.Errorf("%w: %s is marked assume-unchanged or skip-worktree in %s; clear that first", ErrInvalid, l[2:], dir)
+			}
+		}
+	}
+	var old []byte
+	headReadme := "HEAD:" + path.Join(PublishDir, readme)
+	if _, err := publishGit(ctx, abs, "cat-file", "-e", headReadme); err == nil {
+		// HEAD has a README: read it, or stop (review 49 round 3: a
+		// failed read started a fresh one, replacing your text).
+		b, err := publishGit(ctx, abs, "cat-file", "blob", headReadme)
+		if err != nil {
+			return Published{}, err
+		}
+		old = []byte(b)
 	}
 	table, err := setRow(old, *sk)
 	if err != nil {
@@ -190,31 +261,50 @@ func (l *Library) Publish(ctx context.Context, name, dir string) (Published, err
 		return Published{}, err
 	}
 	if err := os.RemoveAll(folder); err != nil {
+		undo(ctx, abs, name)
 		return Published{}, err
 	}
 	for p, b := range files {
 		dst := filepath.Join(folder, filepath.FromSlash(p))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			undo(ctx, abs, name)
 			return Published{}, err
 		}
 		if err := os.WriteFile(dst, b, 0o644); err != nil {
+			undo(ctx, abs, name)
 			return Published{}, err
 		}
 	}
 	if err := os.WriteFile(filepath.Join(skillsDir, readme), table, 0o644); err != nil {
+		undo(ctx, abs, name)
 		return Published{}, err
 	}
 
-	paths := []string{"--", path.Join(PublishDir, name), path.Join(PublishDir, readme)}
+	paths := rel
 	if _, err := publishGit(ctx, abs, append([]string{"add", "--all"}, paths...)...); err != nil {
+		undo(ctx, abs, name)
 		return Published{}, err
 	}
-	out := Published{Skill: *sk, Push: "git -C " + shellQuote(abs) + " push"}
-	if _, err := publishGit(ctx, abs, append([]string{"diff", "--cached", "--quiet"}, paths...)...); err == nil {
+	// What git would commit must be the version, exactly: a .gitignore,
+	// line-ending conversion, a filter such as Git LFS, or a disk that
+	// folds case would change it silently (review 49). The folder's tree
+	// is the version's ID when both use the same hash.
+	tree, err := publishGit(ctx, abs, "write-tree", "--prefix="+path.Join(PublishDir, name)+"/")
+	if err != nil {
+		undo(ctx, abs, name)
+		return Published{}, err
+	}
+	if tree = strings.TrimSpace(tree); len(tree) == len(sk.Version) && tree != string(sk.Version) {
+		undo(ctx, abs, name)
+		return Published{}, fmt.Errorf("%w: git in %s would commit something other than %s at %s (tree %s): a .gitignore, line-ending setting, filter (such as Git LFS) or a disk that folds case changes its files; nothing was published", ErrInvalid, dir, name, sk.Version, tree)
+	}
+	out := Published{Skill: *sk, Push: "git -C " + shellQuote(abs) + " push -u origin HEAD"}
+	if _, err := publishGit(ctx, abs, append([]string{"diff-index", "--cached", "--quiet", "HEAD"}, paths...)...); err == nil {
 		return out, nil // this version is already there
 	}
 	msg := fmt.Sprintf("Publish the skill %s\n\n%s\n\n%s: %s\n", name, sk.Description, TrailerVersion, sk.Version)
 	if _, err := publishGitIn(ctx, abs, []byte(msg), append([]string{"commit", "--quiet", "--no-verify", "-F", "-"}, paths...)...); err != nil {
+		undo(ctx, abs, name)
 		return Published{}, err
 	}
 	head, err := publishGit(ctx, abs, "rev-parse", "HEAD")
@@ -224,6 +314,25 @@ func (l *Library) Publish(ctx context.Context, name, dir string) (Published, err
 	out.Commit = strings.TrimSpace(head)
 	return out, nil
 }
+
+// undo puts the skill's folder and the README back as HEAD has them (or
+// removes them, where HEAD has none), after a publish that couldn't
+// finish: they were clean before it began.
+func undo(ctx context.Context, dir, name string) {
+	// Most often the publish was cancelled: put things back regardless
+	// (review 49: a cancelled context ran no git, only the removals).
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	defer cancel()
+	for _, p := range []string{path.Join(PublishDir, name), path.Join(PublishDir, readme)} {
+		publishGit(ctx, dir, "reset", "-q", "--", p)
+		os.RemoveAll(filepath.Join(dir, filepath.FromSlash(p)))
+		if _, err := publishGit(ctx, dir, "cat-file", "-e", "HEAD:"+p); err == nil {
+			publishGit(ctx, dir, "checkout", "-q", "HEAD", "--", p)
+		}
+	}
+}
+
+var plainWord = regexp.MustCompile(`^[A-Za-z0-9._/@:+-]+$`)
 
 // noLinks refuses any of rels (under dir) that is a symbolic link.
 func noLinks(dir string, rels ...string) error {
@@ -254,7 +363,7 @@ func publishGitIn(ctx context.Context, dir string, stdin []byte, args ...string)
 
 // shellQuote quotes s for a POSIX shell.
 func shellQuote(s string) string {
-	if regexp.MustCompile(`^[A-Za-z0-9._/@:+=-]+$`).MatchString(s) {
+	if plainWord.MatchString(s) {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -277,7 +386,7 @@ func cell(s string) string {
 			b.WriteString("&gt;")
 		case '&':
 			b.WriteString("&amp;")
-		case '|', '\\', '`', '*', '_', '[', ']', '(', ')', '!', '#', '~', '{', '}', '+', '-', '.', ':', '"', '\'', '=':
+		case '|', '\\', '`', '*', '_', '[', ']', '(', ')', '!', '#', '~', '{', '}', '+', '-', '.', ':', '"', '\'', '=', '$':
 			b.WriteByte('\\')
 			b.WriteRune(r)
 		default:

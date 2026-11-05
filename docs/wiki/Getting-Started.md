@@ -79,7 +79,6 @@ Make a repository of yours on GitHub and clone it to `~/src/my-skills` (for exam
 cd ~/src/heedle-ai/loom
 go run ./cmd/loom skills -store ~/skills-demo.git -add ../treadle/skills/find-evidence
 go run ./cmd/loom skills publish find-evidence -repo ~/src/my-skills -store ~/skills-demo.git
-git -C ~/src/my-skills push -u origin HEAD
 ```
 
-`publish` prints what it committed and the push command. A friend imports it with its folder's link, `https://github.com/YOU/my-skills/tree/main/skills/find-evidence`, or lists everything you've published with `-catalog https://github.com/YOU/my-skills`; from a repository they don't trust it waits for their review.
+`publish` prints what it committed and the push to run, `git -C ~/src/my-skills push -u origin HEAD` (your clone of a GitHub repository has `origin`; a local try has nothing to push to). It refuses if you have changes of your own in `skills/find-evidence/` or `skills/README.md`, or no git identity (`git config user.name` and `user.email`). A friend imports it with its folder's link, `https://github.com/YOU/my-skills/tree/main/skills/find-evidence`, or lists everything you've published with `-catalog https://github.com/YOU/my-skills`; from a repository they don't trust it waits for their review.

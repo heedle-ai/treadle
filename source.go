@@ -391,7 +391,7 @@ func gitIn(ctx context.Context, dir string, stdin []byte, args ...string) (strin
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1")
+	cmd.Env = append(gitEnv(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1")
 	// git starts helpers (git-remote-https) that outlive it if only it is
 	// killed: give it its own process group, and kill the group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -406,6 +406,27 @@ func gitIn(ctx context.Context, dir string, stdin []byte, args ...string) (strin
 		return "", fmt.Errorf("treadle: git %s: %v: %s", args[0], err, redact(strings.TrimSpace(stderr.String())))
 	}
 	return out.String(), nil
+}
+
+// gitEnv is this process's environment without the variables that
+// would point git at another repository, index or object store, or add
+// configuration (hooks, filters) from outside (review 49).
+func gitEnv() []string {
+	var out []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		switch {
+		case k == "GIT_DIR", k == "GIT_WORK_TREE", k == "GIT_INDEX_FILE", k == "GIT_OBJECT_DIRECTORY", k == "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+			k == "GIT_CEILING_DIRECTORIES", k == "GIT_COMMON_DIR", k == "GIT_NAMESPACE", k == "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+			k == "GIT_CONFIG", k == "GIT_CONFIG_PARAMETERS", k == "GIT_CONFIG_COUNT",
+			strings.HasPrefix(k, "GIT_CONFIG_KEY_"), strings.HasPrefix(k, "GIT_CONFIG_VALUE_"):
+			// GIT_CONFIG_GLOBAL, _SYSTEM and _NOSYSTEM choose your own
+			// configuration files, and are kept (review 49).
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 var userinfo = regexp.MustCompile(`://[^/@\s]*@`)
