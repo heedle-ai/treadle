@@ -42,7 +42,9 @@ const (
 var (
 	repoURL = regexp.MustCompile(`^(https://[A-Za-z0-9.-]+(:[0-9]+)?|file://)/[A-Za-z0-9._~/@+-]+$`)
 	refName = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
-	gitHub  = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(\.git)?(/tree/([^/]+)(/(.+?))?)?/?$`)
+	// fullCommit is a full SHA-1 or SHA-256 commit ID.
+	fullCommit = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+	gitHub     = regexp.MustCompile(`^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(\.git)?(/tree/([^/]+)(/(.+?))?)?/?$`)
 )
 
 // check reports whether s can be fetched: an https:// or file:// URL, a
@@ -55,6 +57,8 @@ func (s Source) check() error {
 		return fmt.Errorf("%w: ref %q", ErrInvalid, s.Ref)
 	case s.Path != "" && !skillPath(s.Path):
 		return fmt.Errorf("%w: path %q", ErrInvalid, s.Path)
+	case s.Commit != "" && !fullCommit.MatchString(s.Commit):
+		return fmt.Errorf("%w: commit %q (want a full commit ID)", ErrInvalid, s.Commit)
 	}
 	return nil
 }
@@ -115,8 +119,12 @@ const FetchTimeout = 5 * time.Minute
 // line-ending or attribute conversion, and no file-system case folding.
 // Their number and sizes are checked before any is read. Hidden files and
 // folders are left out; a symbolic link or submodule refuses the folder.
-// It returns the folder and the source with Commit set.
+// It returns the folder and the source with Commit set. A source that
+// already names its Commit (one a Catalog listed) is fetched only if its
+// branch is still at that commit: what was seen is what's imported, or
+// nothing (roadmap 10.6).
 func Fetch(ctx context.Context, s Source) (map[string][]byte, Source, error) {
+	seen := s.Commit
 	if err := s.check(); err != nil {
 		return nil, s, err
 	}
@@ -140,6 +148,9 @@ func Fetch(ctx context.Context, s Source) (map[string][]byte, Source, error) {
 		return nil, s, err
 	}
 	s.Commit = strings.TrimSpace(commit)
+	if seen != "" && seen != s.Commit {
+		return nil, s, fmt.Errorf("%w: %s has changed since it was listed: it is at %s now, not %s; list it again", ErrInvalid, s.Repo, s.Commit, seen)
+	}
 	treeish := "HEAD^{tree}" // HEAD alone is a commit, never a tree
 	if s.Path != "" {
 		treeish = "HEAD:" + s.Path
@@ -370,8 +381,16 @@ func sparseClone(ctx context.Context, dir string, s Source, patterns ...string) 
 // own git setup, such as gh auth setup-git, still applies), and never
 // following a repository's own hooks or filters into this machine.
 func git(ctx context.Context, dir string, args ...string) (string, error) {
+	return gitIn(ctx, dir, nil, args...)
+}
+
+// gitIn is git with stdin.
+func gitIn(ctx context.Context, dir string, stdin []byte, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=user"}, args...)...)
 	cmd.Dir = dir
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_LFS_SKIP_SMUDGE=1")
 	// git starts helpers (git-remote-https) that outlive it if only it is
 	// killed: give it its own process group, and kill the group.
