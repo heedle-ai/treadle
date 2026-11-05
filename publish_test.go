@@ -200,11 +200,11 @@ func TestInv_PublishRefusesWhatItShould(t *testing.T) {
 
 	for _, key := range []string{
 		"sk-ant-" + "api03-abcdefghijklmnopqrstuvwxyz", "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789", "github_pat_" + "11ABCDEFG0123456789_abcdefghij",
-		"AKIA" + "IOSFODNN7EXAMPLE", "aws_secret_access_key = wJalrXUt" + "nFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYAB", "-----BEGIN OPENSSH PRIVATE KEY-----",
-		"-----BEGIN RSA PRIVATE KEY-----", "xoxb-" + "1234567890-abcdefghij", "sk_live_" + "abcdefghijklmnop1234", "AIza" + "SyA-abcdefghijklmnopqrstuvwxyz0123456",
+		"AKIA" + "IOSFODNN7EXAMPLE", "aws_secret_access_key = wJalrXUt" + "nFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYAB", "-----BEGIN OPENSSH PRIVATE" + " KEY-----",
+		"-----BEGIN RSA PRIVATE" + " KEY-----", "xoxb-" + "1234567890-abcdefghij", "sk_live_" + "abcdefghijklmnop1234", "AIza" + "SyA-abcdefghijklmnopqrstuvwxyz0123456",
 		"sk-proj-" + "abcdefghijklmnopqrstuvwxyz0123456789",
 		// Review 49: quoted names, and more kinds of key.
-		`{"aws_secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYAB"}`, `"SecretAccessKey": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYAB"`,
+		`{"aws_secret_access_key": "` + "wJalrXUt" + `nFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYAB"}`, `"SecretAccessKey": "` + "wJalrXUt" + `nFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYAB"`,
 		"glpat-" + "abcdefghijklmnopqrstu", "hf_" + "abcdefghijklmnopqrstuvwxyzABCDEFGH", "npm_" + "abcdefghijklmnopqrstuvwxyz0123456789",
 		"https://hooks.slack.com/services/T" + "0000000/B0000000/XXXXXXXXXXXXXXXX",
 	} {
@@ -476,5 +476,20 @@ func TestInv_PublishTouchesNothingOfYours(t *testing.T) {
 
 	if f, n, _, ok := treadle.SecretIn(map[string][]byte{"keys/ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789.txt": []byte("x")}); !ok || n != 0 || !strings.HasPrefix(f, "keys/") {
 		t.Errorf("a key in a path: %v %v %v", f, n, ok)
+	}
+}
+
+// TestInv_TestKeysLookLikeNoKey: the keys these tests plant are split in
+// the source, so no line of a test file is a key to GitHub's push
+// protection, or to SecretIn. (Roadmap 10.6: push protection refused
+// the branch over a test's Hugging Face token.)
+func TestInv_TestKeysLookLikeNoKey(t *testing.T) {
+	files := map[string][]byte{}
+	names, _ := filepath.Glob("*_test.go")
+	for _, n := range names {
+		files[n] = must(os.ReadFile(n))
+	}
+	if f, n, what, ok := treadle.SecretIn(files); ok {
+		t.Errorf("%s line %d looks like %s", f, n, what)
 	}
 }
