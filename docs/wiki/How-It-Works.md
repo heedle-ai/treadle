@@ -23,7 +23,7 @@ A skill can come from four places, and each goes through the same checks before 
 | A GitHub link to a folder | `loom skills -import https://github.com/OWNER/REPO/tree/REF/PATH` | `ParseGitHub`, then `Library.Import` |
 | Any Git repository | `loom skills -import URL -path PATH [-branch REF]` (an `https://` or `file://` URL) | `Library.Import` |
 
-`loom skills -catalog LINK` lists what a repository offers: every folder up to three levels down with a `SKILL.md`, with its name and description, or why it can't be imported as it is (`Catalog`).
+`loom skills -catalog LINK` lists what a repository offers: every folder up to three levels down with a `SKILL.md`, with its name and description, or why it can't be imported as it is (`Catalog`). Each entry's source names the commit the catalog was read at, and importing that source (as drawdown's **Browse a repository** does for each skill you pick) takes exactly that commit, or nothing, saying the repository has changed since it was listed (`Fetch`, `TestInv_ImportPinsTheCommitSeen`).
 
 Fetching is the `git` CLI's: a shallow, sparse clone of just the skill's folder (only files named `SKILL.md`, for a catalog) into a temporary directory, removed afterwards. The files are then read from Git's own objects (`ls-tree`, then `cat-file`), not from the checked-out folder, so they are the commit's exact bytes whatever the repository's `.gitattributes` or your settings say, and their number and sizes are checked before any is read. git never prompts for credentials (your own setup, such as `gh auth setup-git`, still applies to private repositories), runs no hooks from the repository, and is given the URL after `--`, so a URL can't pass as an option. It runs in its own process group, killed with its helpers if the fetch is cancelled, and a fetch with no deadline of its own stops after 5 minutes (`FetchTimeout`). A source must be an `https://` or `file://` URL without credentials, a plain branch or tag name, and a path of segments made of letters, digits, `.`, `_` and `-`; hidden files and folders in the skill's folder are left out, and a symbolic link or submodule refuses it. The download itself is git's: a huge file in the chosen folder is downloaded before the size check refuses it, within the timeout.
 
@@ -39,6 +39,21 @@ Skill-Source-Commit: ca45fc496a3436251f191354091d557da31c15b5
 ```
 
 [Anthropic's skills repository](https://github.com/anthropics/skills) imports as it is, all but two folders, which its catalog lists with the reason: `claude-api`, whose description is longer than the 1024 characters Agent Skills allow, and `template`, whose folder isn't named like its skill.
+
+## Publishing a skill
+
+[[/images/publish.svg|alt=String diagram of publish ; import: your skill's newest approved version is checked (no secret, no link, inside its folder), then written to skills/NAME with its README row and committed with a Treadle-Version trailer; you push it; a friend's heedle fetches it pinned to the commit and reviews it if it asks for connectors; publish ; import is the identity]]
+
+`Library.Publish(ctx, name, dir)` (`loom skills publish NAME -repo DIR`) writes a skill's newest approved version into a clone of a repository of yours, at `skills/NAME/`: its files exactly, the bytes `Library.Files` gives, as regular files (treadle keeps no modes, so none are lost). Publishing again replaces that folder; a skill removed from your library stays in the repository until you remove it. It sets the skill's row in `skills/README.md`, between `<!-- treadle:skills -->` and `<!-- /treadle:skills -->` (name, description, the connectors it asks for, and the version it came from), and leaves every other row and line of the file as they are. Then it commits those two paths, and nothing else you may have changed, with the `git` CLI and your repository's own identity, with a `Treadle-Version: VERSION` trailer; the same version again commits nothing. git runs without hooks, signing, prompts or a pager. **It never pushes:** it prints the `git push` command for you to run (`TestInv_PublishNeverPushes`).
+
+Before writing anything it refuses:
+
+- a skill with no approved version: one waiting for review is never published (`ErrNotApproved`);
+- files that look like they hold a secret (`ErrSecret`, naming the file and line): anything a key check matches, such as `sk-ant-`, GitHub tokens (`ghp_`, `github_pat_`), AWS keys, private-key blocks, Slack, Stripe, Google and OpenAI keys (`SecretIn`);
+- a path that would leave the skill's folder, and a symbolic link at `skills/`, `skills/NAME/`, `skills/README.md` or inside the folder, so nothing is written through one;
+- a folder that isn't the top of a Git repository.
+
+Each README cell is one line, with `|` and every character Markdown reads specially escaped and `<`, `>` and `&` written as entities, so a description can't end its cell, start a link or an image, or inject HTML on GitHub (`TestInv_PublishedReadmeCantBeBroken`). Publishing then importing is the identity: the imported version has the same files, byte for byte, the same modes and the same description, from the commit published (`TestLaw_PublishThenImportIsIdentity`, 40 random skill folders). An import from your repository is an import like any other: from a repository your friend doesn't trust, or asking for connectors, it waits for their review.
 
 ## Trust and review
 
@@ -105,10 +120,11 @@ treadle ships three skills, in `skills/`. `trip-planner` is the [flagship](https
 
 ## Laws
 
-A skill's steps are agent steps, so their answers can differ between runs; what holds is that a run is always checked against, run with and recorded with the versions its plan pins (`TestLaw_SkillRunsArePinned`), and loom's soundness laws 5 and 11 are stated with those pins.
+A skill's steps are agent steps, so their answers can differ between runs; what holds is that a run is always checked against, run with and recorded with the versions its plan pins (`TestLaw_SkillRunsArePinned`), and loom's soundness laws 5 and 11 are stated with those pins. Publishing then importing a skill is the identity on its files, modes and description (`TestLaw_PublishThenImportIsIdentity`).
 
 ## Where it stops
 
 - **Submitting needs the store too.** `loom compile` and `loom run` take `-store`, so a program can use the store's skills; drawdown uses its own `-store`.
 - **Review is by repository, not by author.** A trusted prefix trusts every branch of every repository under it, and whoever can push there.
+- **The secret check is a key check.** It finds keys that look like keys; a password in prose, or a key in a format it doesn't know, isn't found. Read what you publish.
 - **Trusting is done at the terminal.** drawdown can import, add, approve and reject (through loom's skills workflow on a worker), but trusted prefixes are set only with `loom skills -trust`.

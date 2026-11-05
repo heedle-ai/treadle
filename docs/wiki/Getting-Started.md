@@ -70,3 +70,16 @@ git --git-dir ~/skills-demo.git log -1 --format=%B refs/treadle/skills/pdf
 ```
 
 The log shows where it came from, down to the commit, and the pending commit it was approved from. To skip review for repositories you trust, `-trust https://github.com/anthropics`. To keep a `SKILL.md` you have as text, paste it: `go run ./cmd/loom skills -store ~/skills-demo.git -add - < SKILL.md`.
+
+## 5. Share a skill
+
+Make a repository of yours on GitHub and clone it to `~/src/my-skills` (for example `gh repo create my-skills --public --clone` in `~/src`; to try it locally, `git init -b main ~/src/my-skills`), then publish a skill of your library into it. It commits; you push:
+
+```bash
+cd ~/src/heedle-ai/loom
+go run ./cmd/loom skills -store ~/skills-demo.git -add ../treadle/skills/find-evidence
+go run ./cmd/loom skills publish find-evidence -repo ~/src/my-skills -store ~/skills-demo.git
+git -C ~/src/my-skills push -u origin HEAD
+```
+
+`publish` prints what it committed and the push command. A friend imports it with its folder's link, `https://github.com/YOU/my-skills/tree/main/skills/find-evidence`, or lists everything you've published with `-catalog https://github.com/YOU/my-skills`; from a repository they don't trust it waits for their review.
