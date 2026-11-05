@@ -410,9 +410,19 @@ func TestInv_PublishTouchesNothingOfYours(t *testing.T) {
 		t.Errorf("left %q", st)
 	}
 
-	// No identity.
+	// No identity. useConfigOnly stops git making one up from the user
+	// and host names, which it does where the host name has a domain
+	// (macOS CI's did, and git var then succeeded).
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	noIdent := filepath.Join(t.TempDir(), "gitconfig")
+	os.WriteFile(noIdent, []byte("[user]\n\tuseConfigOnly = true\n"), 0o644)
+	t.Setenv("GIT_CONFIG_GLOBAL", noIdent)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	for _, k := range []string{"EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
 	anon := t.TempDir()
 	gitOut(t, anon, "init", "-q", "-b", "main")
 	if _, err := l.Publish(ctx, "weather", anon); !errors.Is(err, treadle.ErrInvalid) || !strings.Contains(err.Error(), "identity") {
